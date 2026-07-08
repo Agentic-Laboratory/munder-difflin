@@ -324,6 +324,13 @@ export interface HarnessConfig {
   /** Never condense a file smaller than this; also the section-trigger byte floor.
    *  DECIDED: 16 KB. */
   reflectMinBytes?: number;
+
+  // ─── Dictation (Free Flow push-to-talk) hotkey ─────────────────────────────
+  /** Which modifier the renderer hold-to-talk gesture watches (OAT-2). V1 keeps
+   *  the renderer capture-phase pattern (terminal-safe solo-hold) and only makes
+   *  WHICH modifier configurable — OS-global hotkeys (uiohook) stay Phase 2.
+   *  'Alt' = the original hold-Option (⌥) default. */
+  dictationHotkey?: 'Alt' | 'Control' | 'Meta';
 }
 
 const DEFAULTS: HarnessConfig = {
@@ -374,7 +381,9 @@ const DEFAULTS: HarnessConfig = {
   reflectRecentKeep: 12,
   reflectMinBytes: 16_384,
   // Enterprise Knowledge Graph — opt-in; dark until the user enables it.
-  knowledgeGraph: { enabled: true }
+  knowledgeGraph: { enabled: true },
+  // Dictation hold-to-talk modifier — 'Alt' preserves the original hold-Option (⌥).
+  dictationHotkey: 'Alt'
 };
 
 function configPath(): string {

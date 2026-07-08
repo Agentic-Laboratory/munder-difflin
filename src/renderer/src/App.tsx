@@ -78,6 +78,9 @@ export function App() {
       // Mirror the active office theme so OfficeFloor renders it (gated on the
       // tvShowOffices flag; off = always the office). Settings keeps this synced.
       useStore.getState().setOfficeTheme(c.tvShowOffices ? (c.officeTheme ?? 'office') : 'office');
+      // Mirror the dictation hold-to-talk modifier so holdOption.ts reads the
+      // user's chosen key live (OAT-2). Default 'Alt' = the original hold-Option.
+      useStore.getState().setDictationHotkey(c.dictationHotkey ?? 'Alt');
     });
     // Mirror BYOK OpenAI key presence (boolean only; the key never leaves main) so the
     // Realtime Michael voice toggle can gate on it. Lives in the secret broker, not

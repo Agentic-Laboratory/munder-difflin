@@ -6,7 +6,7 @@ import { MessageQueueComposer } from './MessageQueueComposer';
 import { disposeTerminal } from './terminalPool';
 import { Icon } from './Icon';
 import { SpritePortrait } from './SpritePortrait';
-import { RealtimeMichaelToggle } from './RealtimeMichaelToggle';
+import { AvatarPuck } from './AvatarPuck';
 import { CostHud } from '@/realtime/CostHud';
 import { useStore, type Agent } from '@/store/store';
 import { usePtyParser } from '@/hooks/usePtyParser';
@@ -125,7 +125,7 @@ export function FullscreenTerminal() {
               god orchestrator) globally, not the agent in view, so users can start a
               voice session even while a worker's terminal fills the screen. The cost
               HUD stays Michael-only (it belongs to his card). */}
-          <RealtimeMichaelToggle />
+          <AvatarPuck compact />
           {agent.isGod && <CostHud compact />}
           <PixelButton variant="destructive" size="sm" onClick={onKill}>
             <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>

@@ -285,6 +285,8 @@ export interface HarnessConfig {
   providerBaseUrls?: Partial<Record<AgentProvider, string>>;
   /** Per-CLI-provider default model slug, used to pre-fill the model picker. */
   providerDefaultModels?: Partial<Record<AgentProvider, string>>;
+  /** Dictation hold-to-talk modifier (OAT-2). 'Alt' = the original hold-Option (⌥). */
+  dictationHotkey?: 'Alt' | 'Control' | 'Meta';
 }
 
 export interface MemoryStatus {

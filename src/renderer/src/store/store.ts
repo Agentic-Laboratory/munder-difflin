@@ -5,6 +5,7 @@ import type { ThemeId } from '@/scene/office/themeRegistry';
 import type { StatusKind } from '@/components/PixelBadge';
 import type { AgentProvider } from '@shared/agentProvider';
 import type { HireManifest } from '@shared/hire';
+import type { DictationHotkey } from '@/store/config';
 
 export type ToolKind =
   | 'Read' | 'Edit' | 'Write' | 'Bash' | 'WebFetch' | 'WebSearch'
@@ -205,6 +206,11 @@ interface State {
    *  on switch). OfficeFloor depends on this and rebuilds the scene on change. */
   officeTheme: ThemeId;
   setOfficeTheme: (theme: ThemeId) => void;
+  /** Mirror of config.dictationHotkey (OAT-2) so the hold-to-talk gesture reads
+   *  the chosen modifier live (set by App on config load + Settings on save).
+   *  'Alt' = the original hold-Option (⌥). */
+  dictationHotkey: DictationHotkey;
+  setDictationHotkey: (hk: DictationHotkey) => void;
   /** Park a message for an agent. Returns nothing; the flush loop delivers it.
    *  `meta.instruction`, when set, is what gets typed into the PTY instead of
    *  `text` (UI/card surfaces still show `text`). */
@@ -514,6 +520,8 @@ export const useStore = create<State>((set) => ({
   setHasOpenAiKey: (has) => set({ hasOpenAiKey: has }),
   officeTheme: 'office',
   setOfficeTheme: (theme) => set({ officeTheme: theme }),
+  dictationHotkey: 'Alt',
+  setDictationHotkey: (hk) => set({ dictationHotkey: hk }),
   enqueueMessage: (agentId, text, meta) =>
     set((s) => {
       const trimmed = text.trim();
