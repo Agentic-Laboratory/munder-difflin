@@ -14,6 +14,7 @@ import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff,
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe
 } from './git';
+import { pomodoro, initPomodoro, syncReminders, clearReminderTimers } from './pomodoro';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
 import { CircuitBreaker, type BreakerInput } from './breaker';
@@ -2699,6 +2700,19 @@ ipcMain.handle('missions:save', (_evt, missions) => {
   return { ok: true };
 });
 
+// ─── IPC: Pomodoro + reminders (OAT-4) ───────────────────────────────────────
+// The engine (src/main/pomodoro.ts) owns all timer/notification policy; the
+// renderer only invokes these controls and renders the PomodoroState it pushes on
+// `pomodoro:state`. Pomodoro/reminder CONFIG is written via the generic
+// `config:update` path (updateConfig), then `reminders:sync` re-arms the scheduler.
+ipcMain.handle('pomodoro:state', () => pomodoro.getState());
+ipcMain.handle('pomodoro:start', () => pomodoro.start());
+ipcMain.handle('pomodoro:pause', () => pomodoro.pause());
+ipcMain.handle('pomodoro:resume', () => pomodoro.resume());
+ipcMain.handle('pomodoro:skip', () => pomodoro.skip());
+ipcMain.handle('pomodoro:reset', () => pomodoro.reset());
+ipcMain.handle('reminders:sync', () => { syncReminders(); return { ok: true }; });
+
 // ─── IPC: full-text search across hive files (board, tasks, memory) ──────────
 ipcMain.handle('hive:textSearch', (_evt, query: unknown) => {
   if (typeof query !== 'string' || !query.trim()) return { ok: false, results: [] };
@@ -3663,6 +3677,14 @@ app.whenReady().then(() => {
       else console.log('[webhook] listening', r.url ? `(tunnel: ${r.url})` : '(no tunnel)');
     });
   }
+  // Pomodoro + reminders (OAT-4): wire the renderer emitter and arm any enabled
+  // reminder schedules. Pomodoro itself is user-started (idle until the Start
+  // control), so there is nothing to arm on boot — only the emitter to install.
+  initPomodoro({
+    emit: (channel, payload) => { try { liveWebContents()?.send(channel, payload); } catch { /* window gone */ } }
+  });
+  try { syncReminders(); } catch (e) { console.error('[pomodoro] syncReminders on boot', e); }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -3679,6 +3701,12 @@ app.on('before-quit', (e) => {
     mainWindow.focus();
     mainWindow.webContents.send('app:closeRequested', { ptyCount: count });
   }
+});
+
+// Tear down the Pomodoro + reminder timers on quit so a pending setTimeout/
+// setInterval never fires into a half-torn-down process (mirrors clearMissionTimers).
+app.on('will-quit', () => {
+  try { clearReminderTimers(); pomodoro.dispose(); } catch (e) { console.error('[pomodoro] will-quit teardown', e); }
 });
 
 app.on('window-all-closed', () => {

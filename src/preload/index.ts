@@ -3,6 +3,7 @@ import type { AgentProvider } from '../shared/agentProvider';
 import type { HireManifest } from '../shared/hire';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
+import type { PomodoroState } from '../shared/pomodoro';
 export type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
 
 /** Renderer-visible integration record: the secretRef handle is redacted to a
@@ -203,6 +204,25 @@ export interface ScheduledMission {
   quietThresholdMs?: number;
 }
 
+/** Configurable Pomodoro focus timer (OAT-4; mirrors src/main/config.ts). Durations in minutes. */
+export interface PomodoroConfig {
+  enabled: boolean;
+  workMinutes: number;
+  shortBreakMinutes: number;
+  longBreakMinutes: number;
+  sessionsBeforeLongBreak: number;
+  notify: boolean;
+}
+
+/** A user reminder (OAT-4; mirrors src/main/config.ts). */
+export interface Reminder {
+  id: string;
+  label: string;
+  intervalMs: number;
+  enabled: boolean;
+  lastFiredAt?: number;
+}
+
 /** Circuit-breaker thresholds (Lane A #6.6b). Mirrors src/main/config.ts. */
 export interface KnowledgeGraphConfig {
   enabled?: boolean;
@@ -287,6 +307,10 @@ export interface HarnessConfig {
   providerDefaultModels?: Partial<Record<AgentProvider, string>>;
   /** Dictation hold-to-talk modifier (OAT-2). 'Alt' = the original hold-Option (⌥). */
   dictationHotkey?: 'Alt' | 'Control' | 'Meta';
+  /** Configurable Pomodoro focus timer (OAT-4; mirrors src/main/config.ts). */
+  pomodoro?: PomodoroConfig;
+  /** User reminder schedules (OAT-4; mirrors src/main/config.ts). */
+  reminders?: Reminder[];
 }
 
 export interface MemoryStatus {
@@ -1110,6 +1134,25 @@ const api = {
     const listener = (_e: IpcRendererEvent, res: Parameters<typeof cb>[0]) => cb(res);
     ipcRenderer.on('capture:screenshot:done', listener);
     return () => ipcRenderer.removeListener('capture:screenshot:done', listener);
+  },
+  // ─── Pomodoro + reminders (OAT-4) ────────────────────────────────────────
+  // Control the main-side Pomodoro engine and subscribe to its state pushes. All
+  // timer/notification policy is main-side; the renderer only invokes + renders.
+  // Pomodoro/reminder CONFIG is written via updateConfig; after editing reminders
+  // call remindersSync() to re-arm the scheduler.
+  pomodoroState: (): Promise<PomodoroState> => ipcRenderer.invoke('pomodoro:state'),
+  pomodoroStart: (): Promise<PomodoroState> => ipcRenderer.invoke('pomodoro:start'),
+  pomodoroPause: (): Promise<PomodoroState> => ipcRenderer.invoke('pomodoro:pause'),
+  pomodoroResume: (): Promise<PomodoroState> => ipcRenderer.invoke('pomodoro:resume'),
+  pomodoroSkip: (): Promise<PomodoroState> => ipcRenderer.invoke('pomodoro:skip'),
+  pomodoroReset: (): Promise<PomodoroState> => ipcRenderer.invoke('pomodoro:reset'),
+  /** Re-arm the reminder scheduler after the reminder list changes. */
+  remindersSync: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('reminders:sync'),
+  /** Subscribe to live Pomodoro state pushes (phase transitions, pause/resume). */
+  onPomodoroState: (cb: (s: PomodoroState) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: PomodoroState) => cb(payload);
+    ipcRenderer.on('pomodoro:state', listener);
+    return () => ipcRenderer.removeListener('pomodoro:state', listener);
   }
 };
 

@@ -5,6 +5,8 @@ import { useStore } from '@/store/store';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
+import { PomodoroSettings } from './PomodoroSettings';
+import { AboutSection } from './AboutSection';
 import { OfficeThemePicker } from './OfficeThemePicker';
 import { McpDefaultsSettings } from './McpDefaultsSettings';
 import { IntegrationsRegistry } from './IntegrationsRegistry';
@@ -113,8 +115,8 @@ function clearLocalState(): void {
   } catch { /* noop */ }
 }
 
-type Section = 'General' | 'AI Engines' | 'MCP' | 'Integrations' | 'Danger Zone';
-const NAV_SECTIONS: Section[] = ['General', 'AI Engines', 'MCP', 'Integrations', 'Danger Zone'];
+type Section = 'General' | 'AI Engines' | 'MCP' | 'Integrations' | 'Pomodoro' | 'About' | 'Danger Zone';
+const NAV_SECTIONS: Section[] = ['General', 'AI Engines', 'MCP', 'Integrations', 'Pomodoro', 'About', 'Danger Zone'];
 
 export function SettingsModal({ config, onClose }: SettingsModalProps) {
   const [confirming, setConfirming] = useState(false);
@@ -1354,6 +1356,12 @@ export function SettingsModal({ config, onClose }: SettingsModalProps) {
                       </div>
                     </div>
                   )}
+
+                  {/* POMODORO + REMINDERS (OAT-4) */}
+                  {activeSection === 'Pomodoro' && <PomodoroSettings config={config} />}
+
+                  {/* ABOUT (OAT-4) */}
+                  {activeSection === 'About' && <AboutSection />}
 
                 </div>
               </div>
