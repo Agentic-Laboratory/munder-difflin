@@ -3590,3 +3590,69 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
+
+// ─── Screenshot capture + right-click context menu (OAT-3) ───────────────────
+// Ask #4: right-click → "Take screenshot". SECURITY POSTURE (this is the
+// main/security card): all capture policy lives MAIN-side. We capturePage() the
+// app's OWN window — NOT the desktop — so no macOS screen-recording permission
+// is needed and no other application's content is ever captured. The renderer
+// receives back a saved file PATH, never raw image bytes. The PNG is written
+// under userData (path-validated), and the image is also copied to the
+// clipboard for immediate paste. Nothing is auto-uploaded.
+async function captureWindowScreenshot(
+  win: BrowserWindow | null
+): Promise<{ ok: true; file: { path: string; name: string } } | { ok: false; error: string }> {
+  if (!win || win.isDestroyed()) return { ok: false, error: 'no window' };
+  try {
+    const image = await win.webContents.capturePage();
+    if (image.isEmpty()) return { ok: false, error: 'capture produced an empty image' };
+    const dir = join(app.getPath('userData'), 'screenshots');
+    mkdirSync(dir, { recursive: true });
+    const name = `screenshot-${Date.now()}.png`;
+    const dest = join(dir, name);
+    // Defensive path-validation: `name` is machine-generated (no renderer input),
+    // but assert the write stays inside the screenshots root before touching disk.
+    const root = resolve(dir);
+    if (!resolve(dest).startsWith(root + sep)) return { ok: false, error: 'refusing write outside screenshot dir' };
+    writeFileSync(dest, image.toPNG());
+    clipboard.writeImage(image);
+    return { ok: true, file: { path: dest, name } };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// Renderer-invokable capture. The renderer holds ZERO policy — it only triggers
+// the main-side worker for its OWN window (resolved from the IPC sender), and
+// gets back a file path.
+ipcMain.handle('capture:screenshot', async (evt) =>
+  captureWindowScreenshot(BrowserWindow.fromWebContents(evt.sender))
+);
+
+// Native right-click menu carrying "Take screenshot". Built AND handled entirely
+// main-side (Menu.popup), so the click action runs the same trusted capture
+// worker; the renderer never decides what the menu does. After a capture we send
+// the saved file PATH back so the UI can toast/preview it.
+function attachScreenshotContextMenu(win: BrowserWindow): void {
+  win.webContents.on('context-menu', (_e, params) => {
+    const template: Electron.MenuItemConstructorOptions[] = [
+      {
+        label: 'Take screenshot',
+        click: async () => {
+          const res = await captureWindowScreenshot(win);
+          if (!win.isDestroyed()) win.webContents.send('capture:screenshot:done', res);
+        }
+      },
+      { type: 'separator' },
+      ...(params.editFlags.canCut ? [{ role: 'cut' as const }] : []),
+      ...(params.editFlags.canCopy ? [{ role: 'copy' as const }] : []),
+      ...(params.editFlags.canPaste ? [{ role: 'paste' as const }] : []),
+      ...(params.editFlags.canSelectAll ? [{ role: 'selectAll' as const }] : [])
+    ];
+    Menu.buildFromTemplate(template).popup({ window: win });
+  });
+}
+
+// Registered at module scope, so it fires for the primary window created later
+// in whenReady() as well as any floor window — every BrowserWindow gets the menu.
+app.on('browser-window-created', (_e, win) => attachScreenshotContextMenu(win));

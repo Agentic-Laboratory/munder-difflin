@@ -1068,7 +1068,24 @@ const api = {
     taskId: string,
     timeoutMs?: number
   ): Promise<{ summary: string; targetAgentId: string; taskId?: string } | { timedOut: true; taskId: string }> =>
-    ipcRenderer.invoke('realtime:waitFor', taskId, timeoutMs)
+    ipcRenderer.invoke('realtime:waitFor', taskId, timeoutMs),
+
+  // ─── Screenshot (OAT-3) ────────────────────────────────────────────────────
+  /** Capture the current window to a PNG under userData + copy it to the
+   *  clipboard, all main-side. Resolves to the saved file PATH (never raw bytes).
+   *  Also reachable via the native right-click "Take screenshot" menu item. */
+  captureScreenshot: (): Promise<
+    { ok: true; file: { path: string; name: string } } | { ok: false; error: string }
+  > => ipcRenderer.invoke('capture:screenshot'),
+  /** Fires after a screenshot is saved (e.g. via the right-click menu) so the UI
+   *  can toast/preview it. Delivers the saved file path, never image bytes. */
+  onScreenshotCaptured: (
+    cb: (res: { ok: true; file: { path: string; name: string } } | { ok: false; error: string }) => void
+  ): (() => void) => {
+    const listener = (_e: IpcRendererEvent, res: Parameters<typeof cb>[0]) => cb(res);
+    ipcRenderer.on('capture:screenshot:done', listener);
+    return () => ipcRenderer.removeListener('capture:screenshot:done', listener);
+  }
 };
 
 contextBridge.exposeInMainWorld('cth', api);
