@@ -26,24 +26,38 @@
  */
 import { useEffect } from 'react';
 import { useStore } from '@/store/store';
+import type { DictationHotkey } from '@/store/config';
 import { freeflowRecorder } from './recorder';
 
-/** How long Option must be held ALONE before recording arms. Long enough that a
- *  normal Alt+key combo (which disqualifies immediately) never trips it. */
+/** How long the modifier must be held ALONE before recording arms. Long enough
+ *  that a normal modifier+key combo (which disqualifies immediately) never trips
+ *  it. */
 const ARM_MS = 320;
 
-function isOptionKey(e: KeyboardEvent): boolean {
-  return e.code === 'AltLeft' || e.code === 'AltRight' || e.key === 'Alt' || e.key === 'AltGraph';
+/** True when `e` is the physical modifier the configured dictation hotkey names.
+ *  V1 keeps the terminal-safe solo-hold gesture and only makes WHICH modifier
+ *  configurable ('Alt' = the original hold-Option ⌥). */
+function matchesHotkey(e: KeyboardEvent, hk: DictationHotkey): boolean {
+  switch (hk) {
+    case 'Control':
+      return e.code === 'ControlLeft' || e.code === 'ControlRight' || e.key === 'Control';
+    case 'Meta':
+      return e.code === 'MetaLeft' || e.code === 'MetaRight' || e.key === 'Meta';
+    case 'Alt':
+    default:
+      return e.code === 'AltLeft' || e.code === 'AltRight' || e.key === 'Alt' || e.key === 'AltGraph';
+  }
 }
 
 /** Install the hold-Option-to-talk gesture for as long as the component is
  *  mounted. Reads enablement + the focused agent from the store live. */
 export function useHoldOptionToTalk(): void {
   useEffect(() => {
-    let optionDown = false;     // Option physically held right now
+    let optionDown = false;     // the hotkey modifier physically held right now
+    let activeHotkey: DictationHotkey = 'Alt'; // locked in at keydown for the keyup match
     let armTimer: ReturnType<typeof setTimeout> | null = null;
     let recording = false;      // THIS gesture started a recording
-    let disqualified = false;   // another key joined → treat as a normal Alt combo
+    let disqualified = false;   // another key joined → treat as a normal modifier combo
 
     const focusedAgentId = (): string | null => {
       const s = useStore.getState();
@@ -63,11 +77,15 @@ export function useHoldOptionToTalk(): void {
     };
 
     const onKeyDown = (e: KeyboardEvent): void => {
-      // Only active when Free Flow is on.
-      if (!useStore.getState().freeflowEnabled) return;
+      // Only active when Free Flow is on. Read the configured modifier LIVE so a
+      // Settings change takes effect without a remount.
+      const s = useStore.getState();
+      if (!s.freeflowEnabled) return;
+      const hk = s.dictationHotkey ?? 'Alt';
 
-      if (isOptionKey(e)) {
+      if (matchesHotkey(e, hk)) {
         if (e.repeat || optionDown) return; // ignore auto-repeat / already tracking
+        activeHotkey = hk;                  // remember it for the matching keyup
         optionDown = true;
         disqualified = false;
         // Don't start a second capture if one is already running/uploading.
@@ -85,8 +103,8 @@ export function useHoldOptionToTalk(): void {
         return;
       }
 
-      // Any non-Option key while Option is held, BEFORE recording armed, means a
-      // real Alt combo (or plain typing) — disqualify and let it pass untouched.
+      // Any non-hotkey key while the modifier is held, BEFORE recording armed, means
+      // a real combo (or plain typing) — disqualify and let it pass untouched.
       if (optionDown && !recording) {
         disqualified = true;
         clearArm();
@@ -94,7 +112,9 @@ export function useHoldOptionToTalk(): void {
     };
 
     const onKeyUp = (e: KeyboardEvent): void => {
-      if (!isOptionKey(e)) return;
+      // Match the SAME modifier that started the hold (activeHotkey), so a mid-hold
+      // Settings change can't strand a recording — blur also resets as a backstop.
+      if (!optionDown || !matchesHotkey(e, activeHotkey)) return;
       clearArm();
       if (recording) freeflowRecorder.stop(); // release → transcribe
       optionDown = false;

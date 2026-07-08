@@ -113,7 +113,22 @@ export interface HarnessConfig {
   providerBaseUrls?: Partial<Record<AgentProvider, string>>;
   /** Per-CLI-provider default model slug, used to pre-fill the model picker. */
   providerDefaultModels?: Partial<Record<AgentProvider, string>>;
+  /** Dictation hold-to-talk modifier (OAT-2). 'Alt' = the original hold-Option (⌥). */
+  dictationHotkey?: DictationHotkey;
 }
+
+/** Which modifier the renderer hold-to-talk gesture watches. V1 keeps the
+ *  terminal-safe renderer capture-phase pattern (solo-hold threshold) and only
+ *  makes WHICH modifier configurable; OS-global hotkeys are Phase 2.
+ *  'Alt' = Option (⌥, the original default) · 'Control' = ⌃ · 'Meta' = ⌘. */
+export type DictationHotkey = 'Alt' | 'Control' | 'Meta';
+
+/** UI labels for each dictation hotkey option (Settings dropdown + puck tooltip). */
+export const DICTATION_HOTKEY_LABELS: Record<DictationHotkey, string> = {
+  Alt: 'Option (⌥)',
+  Control: 'Control (⌃)',
+  Meta: 'Command (⌘)'
+};
 
 /** The Sonnet model with the 1M-token context window — used for Michael's prep
  *  assistant (cheap, large-context context gathering). Mirrors ASSISTANT_MODEL

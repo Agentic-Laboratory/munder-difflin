@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { PixelPanel } from './PixelPanel';
 import { PixelBadge, StatusKind } from './PixelBadge';
 import { SpritePortrait } from './SpritePortrait';
-import { RealtimeMichaelToggle } from './RealtimeMichaelToggle';
+import { AvatarPuck } from './AvatarPuck';
 import { CostHud } from '@/realtime/CostHud';
 import { AccentColorName } from '@/design/tokens';
 import { OfficeCharacterName } from '@/scene/office/cast';
@@ -162,7 +162,7 @@ export function AgentCard({
                   style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <RealtimeMichaelToggle />
+                  <AvatarPuck />
                   <CostHud compact />
                 </div>
               </>

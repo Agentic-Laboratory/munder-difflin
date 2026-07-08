@@ -1,5 +1,6 @@
 import { useState, useEffect, type CSSProperties } from 'react';
-import type { HarnessConfig } from '@/store/config';
+import type { HarnessConfig, DictationHotkey } from '@/store/config';
+import { DICTATION_HOTKEY_LABELS } from '@/store/config';
 import { useStore } from '@/store/store';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
@@ -248,6 +249,10 @@ export function SettingsModal({ config, onClose }: SettingsModalProps) {
   const [freeflowEnabled, setFreeflowEnabled] = useState(slackCfg.freeflowEnabled ?? false);
   const [groqKey, setGroqKey] = useState(slackCfg.groqApiKey ?? '');
   const [freeflowModel, setFreeflowModel] = useState(slackCfg.freeflowModel ?? 'whisper-large-v3-turbo');
+  // OAT-2 — configurable dictation hold-to-talk modifier. Mirrored into the store on
+  // save so holdOption.ts picks it up live (default 'Alt' = the original hold-Option).
+  const setDictationHotkeyStore = useStore((s) => s.setDictationHotkey);
+  const [dictationHotkey, setDictationHotkeyLocal] = useState<DictationHotkey>(slackCfg.dictationHotkey ?? 'Alt');
   const [showGroqKey, setShowGroqKey] = useState(false);
   const [freeflowBusy, setFreeflowBusy] = useState(false);
   const [freeflowNote, setFreeflowNote] = useState('');
@@ -281,6 +286,7 @@ export function SettingsModal({ config, onClose }: SettingsModalProps) {
       setFreeflowEnabled(cc.freeflowEnabled ?? false);
       setGroqKey(cc.groqApiKey ?? '');
       setFreeflowModel(cc.freeflowModel ?? 'whisper-large-v3-turbo');
+      setDictationHotkeyLocal((c as HarnessConfig).dictationHotkey ?? 'Alt');
       setIdleDisconnectMs((c as HarnessConfig).realtimeIdleDisconnectMs ?? 180_000);
     }).catch(() => { /* keep prop-seeded values */ });
     window.cth.kgStatus().then((s) => { if (alive) setKgDocCount(s.docCount); })
@@ -418,6 +424,11 @@ export function SettingsModal({ config, onClose }: SettingsModalProps) {
         apiKey: groqKey,
         model: freeflowModel.trim() || 'whisper-large-v3-turbo'
       });
+      // Persist the dictation hotkey via the generic config writer (renderer holds
+      // no policy — main's writeConfig owns the file), then mirror it into the
+      // store so holdOption.ts reads the new modifier without an app restart.
+      await window.cth.updateConfig({ dictationHotkey });
+      setDictationHotkeyStore(dictationHotkey);
       setFreeflowEnabledStore(enabled);
       // Mirror boolean key-presence so the voice button enables/disables live
       // without an app restart (presence only — never the key value).
@@ -1198,6 +1209,21 @@ export function SettingsModal({ config, onClose }: SettingsModalProps) {
                               </select>
                             </label>
 
+                            {/* Dictation hotkey (OAT-2) — which modifier to hold-to-talk. V1 stays
+                                renderer capture-phase (terminal-safe solo-hold); OS-global is Phase 2. */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, width: 280 }}>
+                              <span style={slackLabelStyle}>Dictation hotkey (hold to talk)</span>
+                              <select
+                                value={dictationHotkey}
+                                onChange={(e) => setDictationHotkeyLocal(e.target.value as DictationHotkey)}
+                                style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                              >
+                                <option value="Alt">{DICTATION_HOTKEY_LABELS.Alt}</option>
+                                <option value="Control">{DICTATION_HOTKEY_LABELS.Control}</option>
+                                <option value="Meta">{DICTATION_HOTKEY_LABELS.Meta}</option>
+                              </select>
+                            </label>
+
                             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                               <PixelButton variant="ghost" size="sm" onClick={() => saveFreeflow()} disabled={freeflowBusy}>
                                 save
@@ -1209,10 +1235,10 @@ export function SettingsModal({ config, onClose }: SettingsModalProps) {
 
                             <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
                               Two ways to dictate: click the mic button above Send in the queue composer (click to record,
-                              click again to transcribe), or — while viewing any agent's terminal — <strong>hold Option
-                              (⌥)</strong> to talk and release to transcribe. Either way the text lands in the composer
-                              draft for you to review before sending. macOS will ask for microphone permission the first
-                              time you record.
+                              click again to transcribe), or — while viewing any agent's terminal — <strong>hold{' '}
+                              {DICTATION_HOTKEY_LABELS[dictationHotkey]}</strong> to talk and release to transcribe. Either
+                              way the text lands in the composer draft for you to review before sending. Michael's avatar
+                              lights up while you talk. macOS will ask for microphone permission the first time you record.
                             </span>
                           </div>
                         )}
