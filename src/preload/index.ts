@@ -1068,9 +1068,58 @@ const api = {
     taskId: string,
     timeoutMs?: number
   ): Promise<{ summary: string; targetAgentId: string; taskId?: string } | { timedOut: true; taskId: string }> =>
-    ipcRenderer.invoke('realtime:waitFor', taskId, timeoutMs)
+    ipcRenderer.invoke('realtime:waitFor', taskId, timeoutMs),
+
+  // ─── Meeting mode (OAT-1 — Granola-style capture + AI notes, V1 mic-only) ────
+  // Same key-stays-in-main contract as Free Flow: only audio bytes cross inbound,
+  // transcript/notes text outbound. Persistence + Groq calls are main-side.
+  /** Start a meeting; returns the id the renderer threads back on each chunk. */
+  meetingStart: (arg: { title: string; templateId?: string | null }): Promise<{ ok: boolean; meetingId?: number; error?: string }> =>
+    ipcRenderer.invoke('meeting:start', arg),
+  /** Transcribe one recorded mic chunk; main persists it as a turn. */
+  meetingTranscribeChunk: (arg: {
+    meetingId: number; seq: number; audio: ArrayBuffer | Uint8Array; mimeType?: string; filename?: string; language?: string;
+  }): Promise<{ ok: boolean; text?: string; turnId?: number; error?: string }> =>
+    ipcRenderer.invoke('meeting:transcribeChunk', arg),
+  /** End a meeting (idempotent). */
+  meetingStop: (arg: { meetingId: number }): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('meeting:stop', arg),
+  /** Recent meetings (metadata only), newest first. */
+  meetingList: (arg?: { limit?: number }): Promise<{ ok: boolean; meetings: MeetingMeta[] }> =>
+    ipcRenderer.invoke('meeting:list', arg ?? {}),
+  /** One meeting with its transcript turns + generated notes. */
+  meetingGet: (arg: { meetingId: number }): Promise<{ ok: boolean; meeting?: MeetingMeta; turns?: MeetingTurn[]; notes?: MeetingNote[]; error?: string }> =>
+    ipcRenderer.invoke('meeting:get', arg),
+  /** Generate + persist AI notes for a meeting (transcript read main-side). */
+  notesSummarize: (arg: { meetingId: number; templateId?: string | null }): Promise<{ ok: boolean; notes?: string; model?: string; noteId?: number; templateId?: string | null; error?: string }> =>
+    ipcRenderer.invoke('notes:summarize', arg)
 };
 
 contextBridge.exposeInMainWorld('cth', api);
 
 export type CthApi = typeof api;
+
+// ─── Meeting mode row shapes (OAT-1) — mirror src/main/db.ts camelCase columns ─
+export interface MeetingMeta {
+  id: number;
+  title: string;
+  templateId: string | null;
+  startedAt: number;
+  endedAt: number | null;
+}
+export interface MeetingTurn {
+  id: number;
+  meetingId: number;
+  seq: number;
+  speaker: string | null;
+  text: string;
+  ts: number;
+}
+export interface MeetingNote {
+  id: number;
+  meetingId: number;
+  templateId: string | null;
+  content: string;
+  model: string | null;
+  ts: number;
+}

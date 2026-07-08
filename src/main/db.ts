@@ -28,6 +28,37 @@ export interface CommandHistoryRow {
   ts: number;
 }
 
+// ─── Meeting mode (OAT-1) — additive rows (user_version 2) ───────────────────
+/** A recorded meeting session (camelCase columns for the renderer). */
+export interface MeetingRow {
+  id: number;
+  title: string;
+  templateId: string | null;
+  startedAt: number;
+  /** null while recording; set on stop. */
+  endedAt: number | null;
+}
+/** One transcribed chunk of a meeting. `speaker` is a Phase-2 diarization seam
+ *  (always null in V1 mic-only capture). */
+export interface MeetingTurnRow {
+  id: number;
+  meetingId: number;
+  seq: number;
+  speaker: string | null;
+  text: string;
+  ts: number;
+}
+/** One generated AI-notes summary for a meeting (a meeting may be summarized
+ *  multiple times / with different templates). */
+export interface MeetingNoteRow {
+  id: number;
+  meetingId: number;
+  templateId: string | null;
+  content: string;
+  model: string | null;
+  ts: number;
+}
+
 /**
  * Ordered, append-only migrations. Index N takes the DB from user_version N to
  * N+1. To evolve the schema, APPEND a new function — never edit an existing one
@@ -63,6 +94,36 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
         ts       INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_ch_agent_ts ON command_history(agent_id, ts DESC);
+    `);
+  },
+  // → user_version 2 (OAT-1, Oatmeal): meeting capture + transcript turns + AI notes.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS meetings (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        title       TEXT NOT NULL,
+        template_id TEXT,
+        started_at  INTEGER NOT NULL,
+        ended_at    INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS meeting_turns (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        meeting_id INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+        seq        INTEGER NOT NULL,
+        speaker    TEXT,               -- Phase-2 diarization seam; NULL in V1
+        text       TEXT NOT NULL,
+        ts         INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_mt_meeting_seq ON meeting_turns(meeting_id, seq);
+      CREATE TABLE IF NOT EXISTS meeting_notes (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        meeting_id  INTEGER NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+        template_id TEXT,
+        content     TEXT NOT NULL,
+        model       TEXT,
+        ts          INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_mn_meeting_ts ON meeting_notes(meeting_id, ts DESC);
     `);
   }
 ];
@@ -164,6 +225,89 @@ export class PersistStore {
     return this.db.prepare(
       "SELECT id, agent_id AS agentId, cwd, text, ts FROM command_history WHERE text LIKE ? ESCAPE '\\' ORDER BY ts DESC, id DESC LIMIT ?"
     ).all(needle, lim) as CommandHistoryRow[];
+  }
+
+  // ─── meetings (OAT-1, additive) ─────────────────────────────────────────────
+
+  /** Start a meeting row. Returns the new meeting id (0 if the DB is closed). */
+  addMeeting(entry: { title: string; templateId?: string | null }): number {
+    if (!this.db) return 0;
+    const title = (entry.title ?? '').trim() || 'Untitled meeting';
+    const info = this.db.prepare(
+      'INSERT INTO meetings (title, template_id, started_at, ended_at) VALUES (?, ?, ?, NULL)'
+    ).run(title, entry.templateId ?? null, Date.now());
+    return Number(info.lastInsertRowid);
+  }
+
+  /** Mark a meeting ended (idempotent — only stamps the first time). */
+  endMeeting(id: number): void {
+    if (!this.db) return;
+    this.db.prepare('UPDATE meetings SET ended_at = ? WHERE id = ? AND ended_at IS NULL')
+      .run(Date.now(), id);
+  }
+
+  /** Rename a meeting (used by auto-title). No-op on empty title. */
+  renameMeeting(id: number, title: string): void {
+    if (!this.db) return;
+    const t = (title ?? '').trim();
+    if (!t) return;
+    this.db.prepare('UPDATE meetings SET title = ? WHERE id = ?').run(t, id);
+  }
+
+  /** Most-recent-first meetings. */
+  listMeetings(limit = 100): MeetingRow[] {
+    if (!this.db) return [];
+    const lim = clampLimit(limit, 100);
+    return this.db.prepare(
+      'SELECT id, title, template_id AS templateId, started_at AS startedAt, ended_at AS endedAt FROM meetings ORDER BY started_at DESC, id DESC LIMIT ?'
+    ).all(lim) as MeetingRow[];
+  }
+
+  /** One meeting by id, or undefined. */
+  getMeeting(id: number): MeetingRow | undefined {
+    if (!this.db) return undefined;
+    return this.db.prepare(
+      'SELECT id, title, template_id AS templateId, started_at AS startedAt, ended_at AS endedAt FROM meetings WHERE id = ?'
+    ).get(id) as MeetingRow | undefined;
+  }
+
+  /** Append a transcribed turn. Empty text or a bad meeting id are ignored.
+   *  Returns the new turn id (0 if skipped). */
+  addMeetingTurn(entry: { meetingId: number; seq: number; text: string; speaker?: string | null }): number {
+    if (!this.db) return 0;
+    const text = (entry.text ?? '').trim();
+    if (!text || !Number.isFinite(entry.meetingId) || entry.meetingId <= 0) return 0;
+    const info = this.db.prepare(
+      'INSERT INTO meeting_turns (meeting_id, seq, speaker, text, ts) VALUES (?, ?, ?, ?, ?)'
+    ).run(entry.meetingId, Math.max(0, Math.floor(entry.seq || 0)), entry.speaker ?? null, text, Date.now());
+    return Number(info.lastInsertRowid);
+  }
+
+  /** All turns for a meeting, in capture order. */
+  listMeetingTurns(meetingId: number): MeetingTurnRow[] {
+    if (!this.db) return [];
+    return this.db.prepare(
+      'SELECT id, meeting_id AS meetingId, seq, speaker, text, ts FROM meeting_turns WHERE meeting_id = ? ORDER BY seq ASC, id ASC'
+    ).all(meetingId) as MeetingTurnRow[];
+  }
+
+  /** Store a generated notes summary. Returns the new note id (0 if skipped). */
+  addMeetingNote(entry: { meetingId: number; templateId?: string | null; content: string; model?: string | null }): number {
+    if (!this.db) return 0;
+    const content = (entry.content ?? '').trim();
+    if (!content || !Number.isFinite(entry.meetingId) || entry.meetingId <= 0) return 0;
+    const info = this.db.prepare(
+      'INSERT INTO meeting_notes (meeting_id, template_id, content, model, ts) VALUES (?, ?, ?, ?, ?)'
+    ).run(entry.meetingId, entry.templateId ?? null, content, entry.model ?? null, Date.now());
+    return Number(info.lastInsertRowid);
+  }
+
+  /** Notes for a meeting, newest-first. */
+  listMeetingNotes(meetingId: number): MeetingNoteRow[] {
+    if (!this.db) return [];
+    return this.db.prepare(
+      'SELECT id, meeting_id AS meetingId, template_id AS templateId, content, model, ts FROM meeting_notes WHERE meeting_id = ? ORDER BY ts DESC, id DESC'
+    ).all(meetingId) as MeetingNoteRow[];
   }
 }
 

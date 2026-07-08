@@ -9,6 +9,7 @@ import { TasksKanban } from './TasksKanban';
 import { AskMeTab } from './AskMeTab';
 import { SchedulesTab } from './SchedulesTab';
 import { WorkersTab } from './WorkersTab';
+import { MeetingPanel } from './MeetingPanel';
 import { acquireTerminal, resetTerminal } from './terminalPool';
 import { Icon } from './Icon';
 import { MemoryGraphPanel } from './MemoryGraphPanel';
@@ -26,7 +27,7 @@ import { canReceiveInbox } from '@shared/agentProvider';
 
 // Both the AskMe (#human) tab and the Schedules (#50) tab live here. The inline
 // SCHEDULES section + its ScheduledMission/relTime helpers moved into SchedulesTab.
-type CCTab = 'terminal' | 'floor' | 'tasks' | 'human' | 'schedules' | 'memory' | 'graph' | 'activity' | 'handbook' | 'workers';
+type CCTab = 'terminal' | 'floor' | 'tasks' | 'human' | 'schedules' | 'memory' | 'graph' | 'activity' | 'handbook' | 'workers' | 'meeting';
 
 /** Fallback denominator for the per-agent token meter when no floor token budget
  *  is configured — so the bar reads as a budget estimate (filled + remaining)
@@ -53,7 +54,8 @@ const TABS: { key: CCTab; label: string; icon: Parameters<typeof Icon>[0]['name'
   { key: 'graph', label: 'graph', icon: 'web' },
   { key: 'activity', label: 'activity', icon: 'bell' },
   { key: 'handbook', label: 'commands', icon: 'code' },
-  { key: 'workers', label: 'workers', icon: 'gear' }
+  { key: 'workers', label: 'workers', icon: 'gear' },
+  { key: 'meeting', label: 'meeting', icon: 'mic' }
 ];
 
 export function CommandCenterPanel({ agent }: { agent: Agent }) {
@@ -191,6 +193,7 @@ export function CommandCenterPanel({ agent }: { agent: Agent }) {
         {tab === 'activity' && <ActivityTab />}
         {tab === 'handbook' && <HandbookTab />}
         {tab === 'workers' && <WorkersTab />}
+        {tab === 'meeting' && <MeetingPanel />}
       </div>
     </PixelPanel>
   );
