@@ -30,6 +30,27 @@ export interface ScheduledMission {
   quietThresholdMs?: number;
 }
 
+/** Configurable Pomodoro focus timer (OAT-4; mirrors src/main/config.ts).
+ *  Durations in MINUTES. `enabled` is the master toggle. */
+export interface PomodoroConfig {
+  enabled: boolean;
+  workMinutes: number;
+  shortBreakMinutes: number;
+  longBreakMinutes: number;
+  sessionsBeforeLongBreak: number;
+  notify: boolean;
+}
+
+/** A user reminder (OAT-4; mirrors src/main/config.ts). Fires a native
+ *  Notification every `intervalMs` while enabled. */
+export interface Reminder {
+  id: string;
+  label: string;
+  intervalMs: number;
+  enabled: boolean;
+  lastFiredAt?: number;
+}
+
 /** Circuit-breaker thresholds (mirrors src/main/config.ts CircuitBreakerConfig). */
 export interface CircuitBreakerConfig {
   enabled?: boolean;
@@ -113,6 +134,10 @@ export interface HarnessConfig {
   providerBaseUrls?: Partial<Record<AgentProvider, string>>;
   /** Per-CLI-provider default model slug, used to pre-fill the model picker. */
   providerDefaultModels?: Partial<Record<AgentProvider, string>>;
+  /** Configurable Pomodoro focus timer (OAT-4; mirrors src/main/config.ts). */
+  pomodoro?: PomodoroConfig;
+  /** User reminder schedules (OAT-4; mirrors src/main/config.ts). */
+  reminders?: Reminder[];
 }
 
 /** The Sonnet model with the 1M-token context window — used for Michael's prep

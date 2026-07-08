@@ -130,6 +130,33 @@ export interface KnowledgeGraphConfig {
   rootPath?: string;
 }
 
+/** Configurable Pomodoro focus timer (OAT-4). Durations are in MINUTES. The
+ *  main-side engine (src/main/pomodoro.ts) cycles work → short break → work …
+ *  → long break (after `sessionsBeforeLongBreak` work sessions), firing a native
+ *  Notification at each transition. `enabled` is the master toggle: off ⇒ the
+ *  timer neither runs nor notifies. */
+export interface PomodoroConfig {
+  enabled: boolean;
+  workMinutes: number;
+  shortBreakMinutes: number;
+  longBreakMinutes: number;
+  sessionsBeforeLongBreak: number;
+  /** Fire a native Notification on each phase transition. Default true. */
+  notify: boolean;
+}
+
+/** A user reminder (OAT-4). Each enabled entry fires a native Notification every
+ *  `intervalMs`, armed by the same setTimeout→setInterval scheduler pattern as
+ *  `missions` (see src/main/pomodoro.ts syncReminders). `lastFiredAt` is
+ *  scheduler-owned so a partially-elapsed interval isn't restarted on reboot. */
+export interface Reminder {
+  id: string;
+  label: string;
+  intervalMs: number;
+  enabled: boolean;
+  lastFiredAt?: number;
+}
+
 export interface HarnessConfig {
   /** Has the user completed the first-run onboarding? */
   onboardingComplete: boolean;
@@ -324,6 +351,14 @@ export interface HarnessConfig {
   /** Never condense a file smaller than this; also the section-trigger byte floor.
    *  DECIDED: 16 KB. */
   reflectMinBytes?: number;
+
+  // ─── Pomodoro + reminders (OAT-4) ──────────────────────────────────────────
+  /** Configurable Pomodoro focus timer. The main-side engine fires native
+   *  Notifications at each work/break transition. Default disabled. */
+  pomodoro?: PomodoroConfig;
+  /** User reminder schedules — each enabled entry fires a native Notification on
+   *  its own interval. Default []. */
+  reminders?: Reminder[];
 }
 
 const DEFAULTS: HarnessConfig = {
@@ -374,7 +409,17 @@ const DEFAULTS: HarnessConfig = {
   reflectRecentKeep: 12,
   reflectMinBytes: 16_384,
   // Enterprise Knowledge Graph — opt-in; dark until the user enables it.
-  knowledgeGraph: { enabled: true }
+  knowledgeGraph: { enabled: true },
+  // Pomodoro (OAT-4) — opt-in; classic 25/5/15, long break every 4th session.
+  pomodoro: {
+    enabled: false,
+    workMinutes: 25,
+    shortBreakMinutes: 5,
+    longBreakMinutes: 15,
+    sessionsBeforeLongBreak: 4,
+    notify: true
+  },
+  reminders: []
 };
 
 function configPath(): string {
