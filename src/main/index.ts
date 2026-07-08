@@ -27,6 +27,7 @@ import { listIssues, listCIRuns } from './github';
 import { SlackWebhookServer, SlackReplyServer, postSlackReply, type SlackEventFile } from './slack';
 import { WebhookServer, type WebhookInbound, type WebhookTaskStatus } from './webhook';
 import { transcribeWithGroq, DEFAULT_GROQ_MODEL } from './freeflow';
+import { transcribeMeetingChunk, summarizeMeeting } from './meeting';
 import { registerRealtimeIpc } from './realtime';
 import { registerRealtimeActionIpc } from './realtimeActions';
 import { initCompletionWatcher } from './realtimeCompletionWatcher';
@@ -2881,6 +2882,102 @@ ipcMain.handle('freeflow:transcribe', async (_evt, arg: unknown) => {
     model: cfg.freeflowModel || DEFAULT_GROQ_MODEL,
     language: typeof a.language === 'string' && a.language ? a.language : undefined
   });
+});
+
+// ─── IPC: Meeting mode (OAT-1 — Granola-style capture + AI notes, V1 mic-only) ─
+// Reuses the SAME Groq key + STT engine as Free Flow (key stays main-side; only
+// audio bytes cross inbound, transcript text outbound) and groqChat for notes.
+// Persistence is main-side via PersistStore (meetings/meeting_turns/meeting_notes);
+// the renderer holds no policy. Gated purely on a Groq key being present.
+const asInt = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? Math.floor(v) : NaN);
+
+/** Begin a meeting; returns the new meeting id the renderer threads back. */
+ipcMain.handle('meeting:start', (_evt, arg: unknown) => {
+  const a = (arg ?? {}) as { title?: unknown; templateId?: unknown };
+  const id = persist.addMeeting({
+    title: typeof a.title === 'string' ? a.title : '',
+    templateId: typeof a.templateId === 'string' ? a.templateId : null
+  });
+  if (!id) return { ok: false, error: 'could not start meeting (db unavailable)' };
+  return { ok: true, meetingId: id };
+});
+
+/** Transcribe one recorded mic chunk and persist it as a turn. */
+ipcMain.handle('meeting:transcribeChunk', async (_evt, arg: unknown) => {
+  const cfg = readConfig();
+  if (!cfg.groqApiKey) return { ok: false, error: 'no Groq API key set' };
+  const a = (arg ?? {}) as { meetingId?: unknown; seq?: unknown; audio?: unknown; mimeType?: unknown; filename?: unknown; language?: unknown };
+  const meetingId = asInt(a.meetingId);
+  if (!Number.isFinite(meetingId) || meetingId <= 0) return { ok: false, error: 'bad meeting id' };
+  if (!(a.audio instanceof ArrayBuffer) && !(a.audio instanceof Uint8Array)) return { ok: false, error: 'no audio' };
+  const res = await transcribeMeetingChunk({
+    apiKey: cfg.groqApiKey,
+    audio: a.audio,
+    mimeType: typeof a.mimeType === 'string' ? a.mimeType : undefined,
+    filename: typeof a.filename === 'string' ? a.filename : undefined,
+    model: cfg.freeflowModel || DEFAULT_GROQ_MODEL,
+    language: typeof a.language === 'string' && a.language ? a.language : undefined
+  });
+  if (!res.ok || !res.text) return res;
+  const seq = asInt(a.seq);
+  const turnId = persist.addMeetingTurn({ meetingId, seq: Number.isFinite(seq) ? seq : 0, text: res.text });
+  return { ok: true, text: res.text, turnId };
+});
+
+/** End a meeting (idempotent). */
+ipcMain.handle('meeting:stop', (_evt, arg: unknown) => {
+  const a = (arg ?? {}) as { meetingId?: unknown };
+  const meetingId = asInt(a.meetingId);
+  if (!Number.isFinite(meetingId) || meetingId <= 0) return { ok: false, error: 'bad meeting id' };
+  persist.endMeeting(meetingId);
+  return { ok: true };
+});
+
+/** List recent meetings (metadata only). */
+ipcMain.handle('meeting:list', (_evt, arg: unknown) => {
+  const a = (arg ?? {}) as { limit?: unknown };
+  return { ok: true, meetings: persist.listMeetings(asInt(a.limit) || 100) };
+});
+
+/** Fetch one meeting with its turns + notes. */
+ipcMain.handle('meeting:get', (_evt, arg: unknown) => {
+  const a = (arg ?? {}) as { meetingId?: unknown };
+  const meetingId = asInt(a.meetingId);
+  if (!Number.isFinite(meetingId) || meetingId <= 0) return { ok: false, error: 'bad meeting id' };
+  const meeting = persist.getMeeting(meetingId);
+  if (!meeting) return { ok: false, error: 'meeting not found' };
+  return {
+    ok: true,
+    meeting,
+    turns: persist.listMeetingTurns(meetingId),
+    notes: persist.listMeetingNotes(meetingId)
+  };
+});
+
+/** Generate structured AI notes for a meeting via groqChat + muesli templates,
+ *  and persist the result. Reads all turns main-side; transcript never round-trips
+ *  through the renderer. */
+ipcMain.handle('notes:summarize', async (_evt, arg: unknown) => {
+  const cfg = readConfig();
+  if (!cfg.groqApiKey) return { ok: false, error: 'no Groq API key set' };
+  const a = (arg ?? {}) as { meetingId?: unknown; templateId?: unknown };
+  const meetingId = asInt(a.meetingId);
+  if (!Number.isFinite(meetingId) || meetingId <= 0) return { ok: false, error: 'bad meeting id' };
+  const meeting = persist.getMeeting(meetingId);
+  if (!meeting) return { ok: false, error: 'meeting not found' };
+  const turns = persist.listMeetingTurns(meetingId);
+  const transcript = turns.map((t) => t.text).join('\n').trim();
+  if (!transcript) return { ok: false, error: 'no transcript yet — record some audio first' };
+  const templateId = typeof a.templateId === 'string' ? a.templateId : meeting.templateId;
+  const res = await summarizeMeeting({
+    apiKey: cfg.groqApiKey,
+    transcript,
+    title: meeting.title,
+    templateId
+  });
+  if (!res.ok || !res.notes) return { ok: false, error: res.error || 'could not generate notes' };
+  const noteId = persist.addMeetingNote({ meetingId, templateId, content: res.notes, model: res.model ?? null });
+  return { ok: true, notes: res.notes, model: res.model, noteId, templateId };
 });
 
 // ─── IPC: Realtime Michael (voice orchestrator — ephemeral token mint, rt-1) ──
