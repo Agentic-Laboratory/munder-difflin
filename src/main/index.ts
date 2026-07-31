@@ -2293,7 +2293,7 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   // (Identical recovery path to resetAll — relaunch is the clean re-bind.)
   allowQuit = true;
   writeConfig({ harnessHome: newHome });
-  try { ptyManager.killAll(); } catch (e) { console.error('[changeHome] killAll:', e); }
+  try { ptyManager.killAll({ immediateSweep: true }); } catch (e) { console.error('[changeHome] killAll:', e); }
   app.relaunch();
   app.exit(0);
   return { ok: true as const }; // unreachable (process exits) — typed for the renderer
@@ -2512,7 +2512,7 @@ function teardownAndQuit(): void {
   try { reflector.stop(); } catch (e) { console.error('[quit] reflector.stop:', e); }
   try { persist.close(); } catch (e) { console.error('[quit] persist.close:', e); }
   try { hive.stopAllProxyBridges(); } catch (e) { console.error('[quit] stopAllProxyBridges:', e); }
-  try { ptyManager.killAll(); } catch (e) { console.error('[quit] killAll:', e); }
+  try { ptyManager.killAll({ immediateSweep: true }); } catch (e) { console.error('[quit] killAll:', e); }
   app.quit();
 }
 ipcMain.handle('app:confirmClose', () => {
@@ -2565,7 +2565,7 @@ ipcMain.handle('app:resetAll', () => {
   try { memory.stop(); } catch (e) { console.error('[reset] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[reset] reflector.stop:', e); }
   try { persist.close(); } catch (e) { console.error('[reset] persist.close:', e); }
-  try { ptyManager.killAll(); } catch (e) { console.error('[reset] killAll:', e); }
+  try { ptyManager.killAll({ immediateSweep: true }); } catch (e) { console.error('[reset] killAll:', e); }
   // Erase the hive (Michael's + every agent's memory, inboxes, tasks, board,
   // git history) and the semantic-memory palace. Only these harness-created
   // subdirs are removed — never the user's whole harnessHome folder.
@@ -3604,7 +3604,7 @@ app.on('before-quit', (e) => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    ptyManager.killAll();
+    ptyManager.killAll({ immediateSweep: true });
     app.quit();
   }
 });

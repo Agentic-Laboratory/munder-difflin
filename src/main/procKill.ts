@@ -34,10 +34,20 @@ export function isAlive(pid: number): boolean {
 export function hardKillTree(pid: number): void {
   if (!Number.isInteger(pid) || pid <= 0) return;
   if (process.platform === 'win32') {
+    if (!isAlive(pid)) return;
     try { spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { timeout: 10_000 }); } catch { /* gone */ }
     return;
   }
-  try { process.kill(-pid, 'SIGKILL'); } catch {
+  // Probe the GROUP before firing: when every member already exited, the pgid
+  // no longer exists (ESRCH) and we must not SIGKILL blind — inside the grace
+  // window the kernel may have recycled the id onto an unrelated process group.
+  let groupAlive = true;
+  try { process.kill(-pid, 0); } catch { groupAlive = false; }
+  if (groupAlive) {
+    try { process.kill(-pid, 'SIGKILL'); return; } catch { /* raced to death — fall through */ }
+  }
+  // Group gone (or died under us): reap a lone surviving leader, if any.
+  if (isAlive(pid)) {
     try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
   }
 }

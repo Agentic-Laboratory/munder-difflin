@@ -3,7 +3,7 @@ import type { WebContents } from 'electron';
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { userShellPath } from './shellEnv';
-import { ensureKilled } from './procKill';
+import { ensureKilled, hardKillTree } from './procKill';
 
 interface PtySession {
   id: string;
@@ -403,13 +403,19 @@ export class PtyManager {
    *  individual agent lifecycle, so it suppresses the natural-exit teardown —
    *  we don't want to archive every agent or fire a storm of `git worktree
    *  remove` while the process is tearing down. */
-  killAll() {
+  /** Kill every session. `immediateSweep` is for quit-adjacent paths: the
+   *  normal 4s escalation timer is unref'd and the app usually exits before it
+   *  fires, so callers about to quit/relaunch sweep each tree synchronously
+   *  (no grace) — the guarantee must not depend on an event loop that's about
+   *  to stop. */
+  killAll(opts: { immediateSweep?: boolean } = {}) {
     this.exitHandler = null;
     for (const s of this.sessions.values()) {
       try {
         const pid = s.proc.pid;
         s.proc.kill();
-        ensureKilled(pid);
+        if (opts.immediateSweep) hardKillTree(pid);
+        else ensureKilled(pid);
       } catch { /* noop */ }
     }
     this.sessions.clear();
