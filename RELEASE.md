@@ -1,4 +1,4 @@
-# Munder Difflin v0.3.9
+# Munder Difflin v0.4.0
 
 **A local hive of Claude Code, Antigravity, Codex, Grok & Copilot agents that run themselves** — messaging,
 routing, and remembering, coordinated by a GOD orchestrator you talk to. Local-first and open source.
@@ -7,7 +7,24 @@ routing, and remembering, coordinated by a GOD orchestrator you talk to. Local-f
 
 ---
 
-## What's new in 0.3.9 — *Ask the app whether it's up to date*
+## What's new in 0.4.0 — *The brand grew up*
+
+**Munder Difflin looks like one product now.** The dock icon, the in-app logo, the site favicon,
+and munderdiffl.in all carry the same yellow "MD" mark — and the landing page was rebuilt to show
+the real app instead of describing it.
+
+- **New app icon on every platform.** macOS gets a proper margined-and-shadowed `.icns`, Windows a
+  full-bleed `.ico`, Linux a 1024px `.png` — all cut from the same yellow tile as the in-app logo.
+- **The landing page shows the product.** A looping screen recording in the hero, real screenshots
+  of the Add Agent dialog, the memory panel, and Autonomy & Budgets, and a live pixel-floor sim in
+  a yellow Pokédex shell.
+- **Bright by default.** The site now opens in light mode; dark is one click away and remembered.
+- **Pricing, reframed.** Two services carry the Teams story: **Private Cloud** (a dedicated
+  sandbox VM per clone, 24/7) and **Private Network** (E2E-encrypted clone-to-clone wire).
+
+---
+
+## Still new in 0.3.9 — *Ask the app whether it's up to date*
 
 **Settings → General now answers the question directly.** It names the version you're running,
 tells you whether that's the latest, and gives you one button that says what pressing it does:
@@ -24,32 +41,6 @@ you go to *ask*.
 > back into the hold. The guard is removed entirely — 0.3.9 delivers messages the way 0.3.7 did.
 
 ---
-
-## Still new in 0.3.8
-
-**Memory condensation works for the first time.** Claude Code changed how it names per-project
-transcript directories, and the harness kept reading the old spelling. Nothing errored — an absent
-directory reads as "no transcripts yet" — so the summarizer was blamed for a silence it had nothing
-to do with, and every condense attempt still wrote a full backup before giving up.
-
-- **Transcripts are found again**, so condensation, the offline usage reconciler, and cross-cwd
-  session resume all read the path Claude Code actually writes to. Found and diagnosed by
-  [@gts-47](https://github.com/gts-47).
-- **Triggers, in one place.** Schedules, inbound webhooks, context rules and peer messaging now
-  share a home in Settings, with a history of what fired and what it did.
-- **Compaction stopped running twice.** The hourly standup and the 2-hour context trigger were
-  both asking for it, and turning the trigger off left the standup compacting anyway. One control
-  now, and its off-switch means off. Duplicate `/compact` messages can no longer stack up in a
-  queue and fire together.
-- **The commit history is readable.** It rendered through a library that overlapped its own rows,
-  reserved a fixed 500px for the graph no matter how narrow the panel was, and never showed the
-  commit message at all. It is drawn directly now and fits any width.
-- **Dark mode fixes worth the name.** Disabled buttons had labels at roughly 1.4:1 against their
-  own fill, and the arrow on **Send** was painted in the same colour as the button behind it.
-- **Panels fold.** The IDE's git rail collapses to give the file tree its height back; the
-  fullscreen roster collapses for a full-width terminal.
-- **Codex hooks stopped timing out after one second** — `timeout: 0` means *one second* to Codex,
-  not "no timeout".
 
 > [!NOTE]
 > **Auto-update carries you here from v0.3.7 or v0.3.8.** If you are still on v0.3.5 or v0.3.6,

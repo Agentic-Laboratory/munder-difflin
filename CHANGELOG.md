@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-08-12
+
+**The brand grew up — and the landing page with it.**
+Munder Difflin now looks like one product everywhere: a yellow "MD" mark, matching app icons on
+every platform, and a rebuilt munderdiffl.in that shows the real app instead of describing it.
+
+### Added
+- **Real app screenshots on the landing page.** The Add Agent dialog, the memory panel, and
+  Settings → Autonomy & Budgets — captured from the actual app, not mockups.
+- **A live demo video in the hero.** The old static home-screen shot is now a looping screen
+  recording of the office floor with a live agent terminal.
+- **Clone-to-clone chat and encrypted-wire visuals** with request-a-demo contact points for the
+  Teams features.
+
+### Changed
+- **New app icon.** The dock/taskbar icon is now the yellow "MD" tile on every platform
+  (macOS .icns with proper margins and shadow, Windows .ico, Linux .png), matching the in-app
+  logo and the site favicon.
+- **Landing page defaults to bright (light) mode.** Dark stays one click away and remembered.
+- **Landing accent is yellow again** — bright amber in light mode, gold in dark — applied across
+  buttons, diagrams, the Pokédex-style floor sim, and the pricing cards.
+- **Pricing reframed around the two services** — Private Cloud (a dedicated sandbox VM per clone)
+  and Private Network (E2E-encrypted clone-to-clone wire) — with a team-size slider.
+- **Social previews refreshed.** New Open Graph card and copy that match the current product.
+
 ## [0.3.9] — 2026-08-11
 
 **Ask the app whether it's up to date.**
