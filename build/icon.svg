@@ -1,14 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Munder Difflin app icon — yellow "MD" tile (brand refresh 2026-08).
+       NOTE: design source only; the shipped icons are the PNG/ICO/ICNS files,
+       rendered from the same recipe with the Lobster webfont. "MD" below uses
+       Lobster when installed, cursive fallback otherwise. -->
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#8A1B2E"/>
-      <stop offset="1" stop-color="#6E1423"/>
+    <linearGradient id="g" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#FFE08A"/>
+      <stop offset="0.45" stop-color="#FFCA54"/>
+      <stop offset="1" stop-color="#E8A72E"/>
     </linearGradient>
   </defs>
   <!-- macOS-style rounded square with transparent margins -->
-  <rect x="112" y="112" width="800" height="800" rx="180" fill="url(#g)"/>
-  <rect x="112" y="112" width="800" height="800" rx="180" fill="none" stroke="#4A0D17" stroke-width="6"/>
-  <text x="512" y="540" font-family="'Arial Black','Helvetica Neue',Arial,sans-serif"
-        font-size="380" font-weight="900" fill="#F4F1EA"
-        text-anchor="middle" dominant-baseline="central" letter-spacing="-14">MD</text>
+  <rect x="112" y="112" width="800" height="800" rx="144" fill="url(#g)"
+        stroke="#1A1320" stroke-width="26"/>
+  <!-- bevel -->
+  <rect x="140" y="136" width="744" height="22" rx="11" fill="#FFFFFF" opacity="0.28"/>
+  <rect x="140" y="862" width="744" height="26" rx="13" fill="#000000" opacity="0.18"/>
+  <!-- MD -->
+  <g transform="rotate(-4 512 512)">
+    <text x="524" y="700" text-anchor="middle" font-family="Lobster, cursive"
+          font-size="440" fill="#1A1320">MD</text>
+    <text x="506" y="682" text-anchor="middle" font-family="Lobster, cursive"
+          font-size="440" fill="#FFF8E7">MD</text>
+  </g>
 </svg>
