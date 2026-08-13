@@ -322,6 +322,11 @@ export interface HarnessConfig {
   slackChannelId?: string;
   /** Local HTTP port the webhook server binds to (default 3847). */
   slackPort?: number;
+  /** Which public-tunnel provider the Slack + webhook servers open. 'auto' (default)
+   *  prefers a cloudflared quick tunnel — an ordinary child process we can actually
+   *  kill on stop — and falls back to tunnelmole when cloudflared isn't installed.
+   *  Pin it to force one provider. See src/main/tunnel.ts. */
+  tunnelProvider?: 'auto' | 'cloudflared' | 'tunnelmole';
   /** Opt-in: allow APP/VOICE-INITIATED proactive posting into Slack (e.g. the
    *  renderer's "queued" acknowledgement). DEFAULT OFF per the human directive
    *  "stop posting into Slack by default". This does NOT gate the Slack-ORIGIN
