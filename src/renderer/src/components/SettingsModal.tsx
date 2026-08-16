@@ -18,6 +18,8 @@ import { OfficeThemePicker } from './OfficeThemePicker';
 import { McpDefaultsSettings } from './McpDefaultsSettings';
 import { IntegrationsRegistry } from './IntegrationsRegistry';
 import { AiEnginesSettings } from './AiEnginesSettings';
+import { integrationsClient } from '@/integrations/registryClient';
+import { buildMatrixIntegrationRecord, findMatrixRecord } from './matrixIntegrationRecord';
 import { REALTIME_MODEL } from '@shared/realtimePricing';
 import { RealtimeDevicePicker } from '@/realtime/DevicePicker';
 import { CostHud } from '@/realtime/CostHud';
@@ -304,6 +306,13 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const [matrixRoomIdsText, setMatrixRoomIdsText] = useState((config.matrixRoomIds ?? []).join('\n'));
   const [matrixBusy, setMatrixBusy] = useState(false);
   const [matrixNote, setMatrixNote] = useState('');
+  // The bot's OUTBOUND access token. WRITE-ONLY, exactly like the Integrations
+  // tab: this buffer travels one way into the encrypted store and is cleared on
+  // success — `integrationsList` redacts the stored value to a boolean, so there
+  // is nothing to echo back. `matrixTokenStored` is that boolean.
+  const [matrixToken, setMatrixToken] = useState('');
+  const [matrixTokenStored, setMatrixTokenStored] = useState(false);
+  const [showMatrixToken, setShowMatrixToken] = useState(false);
 
   // --- Webhook triggers (a LIST; src/shared/triggers.ts owns the type) ---------
   // The list itself lives in the store, not in local state: the Triggers tab
@@ -469,6 +478,12 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     }).catch(() => { /* keep prop-seeded values */ });
     window.cth.kgStatus().then((s) => { if (alive) setKgDocCount(s.docCount); })
       .catch(() => { /* status unavailable */ });
+    // Whether a Matrix bot token is already stored. Only the presence boolean
+    // crosses IPC; the token itself never comes back, so this drives the
+    // "stored / not stored" line rather than prefilling the input.
+    void integrationsClient.list().then((recs) => {
+      if (alive) setMatrixTokenStored(findMatrixRecord(recs)?.hasSecret === true);
+    }).catch(() => { /* registry unavailable - assume nothing stored */ });
     // Hydrate live connection state + the persisted Request URL: the
     // tunnel URL lives in main, so reopening Settings while connected re-shows it.
     window.cth.slackStatus().then((s) => {
@@ -554,18 +569,67 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const saveMatrix = async (enabled: boolean) => {
     setMatrixBusy(true); setMatrixNote('');
     try {
+      // One trimmed value, written to BOTH persistence paths — config (what the
+      // /sync listener and matrixOutboundCredentials read) and the integration
+      // record (what the broker forwards to). Trimming twice is how those two
+      // drift apart.
+      const homeserverUrl = matrixHomeserverUrl.trim();
       const roomIds = matrixRoomIdsText.split('\n').map((s) => s.trim()).filter(Boolean);
       await window.cth.updateConfig({
         matrixEnabled: enabled,
-        matrixHomeserverUrl: matrixHomeserverUrl.trim(),
+        matrixHomeserverUrl: homeserverUrl,
         matrixUserId: matrixUserId.trim(),
         matrixRoomIds: roomIds
       } as Partial<HarnessConfig>);
       setMatrixEnabled(enabled);
-      setMatrixNote('saved');
+      // Turning the block OFF persists config only: writing the record here
+      // would either disable an integration the user configured under the
+      // Integrations tab, or claim enabled:true while they just switched off.
+      setMatrixNote(enabled ? await syncMatrixIntegration(homeserverUrl) : 'saved');
     } catch (e) {
       setMatrixNote(e instanceof Error ? e.message : String(e));
     } finally { setMatrixBusy(false); }
+  };
+
+  /**
+   * The second half of a Matrix save: the integration record whose encrypted
+   * secret is the bot's OUTBOUND access token.
+   *
+   * `matrixOutboundCredentials()` (src/main/index.ts) needs four things at once —
+   * a configured homeserver, a record it can find, `record.enabled`, and a stored
+   * secret — so every failure here returns a note instead of letting the block
+   * read "saved" over credentials that resolve to null. Upsert runs FIRST and
+   * setSecret is skipped when it fails (integrationsClient.save): the upsert is
+   * the fail-closed validation gate, and storing a token against a record that
+   * was rejected would leave an orphan secret behind a green note.
+   *
+   * Runs on EVERY save, not just token saves: the record's baseUrl has to follow
+   * an edited Homeserver URL or the broker keeps posting at the old origin.
+   */
+  const syncMatrixIntegration = async (homeserverUrl: string): Promise<string> => {
+    const token = matrixToken.trim();
+    if (!homeserverUrl) {
+      // '' fails the shared baseUrl check, so the record cannot be written. Say
+      // so rather than reporting a token save that did not happen.
+      return token ? 'settings saved — add the homeserver URL to store the access token' : 'saved';
+    }
+    const [templates, records] = await Promise.all([
+      integrationsClient.listTemplates(),
+      integrationsClient.list()
+    ]);
+    // Nothing typed and nothing registered yet: no record to keep in step, and
+    // an empty one would only give the credential lookup something to find.
+    if (!token && !findMatrixRecord(records)) return 'saved';
+
+    const built = buildMatrixIntegrationRecord({ templates, records, homeserverUrl, now: Date.now() });
+    if (!built.ok) return built.error;
+    const res = await integrationsClient.save(built.record, token || undefined);
+    if (!res.ok) return res.error || 'could not store the access token';
+    if (!token) return 'saved';
+    setMatrixToken(''); // write-only: the buffer is cleared, never re-read
+    setShowMatrixToken(false); // re-mask, so the NEXT token isn't typed in the clear
+    setMatrixTokenStored(true);
+    return 'saved — access token stored';
   };
 
   // --- Webhook trigger handlers ---
@@ -1500,9 +1564,9 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                           alongside Slack. No Start/Stop lifecycle here (unlike
                           Slack): this block only persists the homeserver/room/user
                           config keys that the /sync listener (owned elsewhere)
-                          reads. The bot's access token is registered separately,
-                          above, via the generic IntegrationsRegistry ("Matrix"
-                          template) so it stays behind the encrypted secret store. */}
+                          reads, PLUS the bot's outbound access token — which is
+                          stored as the "Matrix" integration record so it stays
+                          behind the encrypted secret store, never in config. */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                         <div style={{
                           fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
@@ -1568,6 +1632,42 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                               />
                             </label>
 
+                            {/* The bot's OUTBOUND access token. Same write-only
+                                treatment as the Integrations tab — masked, never
+                                echoed back, cleared once stored. Saving it writes
+                                the "Matrix" integration record too, which is what
+                                the main process reads when the bot replies. */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Matrix bot access token</span>
+                              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                <input
+                                  type={showMatrixToken ? 'text' : 'password'}
+                                  value={matrixToken}
+                                  onChange={(e) => setMatrixToken(e.target.value)}
+                                  placeholder={matrixTokenStored ? 'Paste a new token to replace the stored one' : 'syt_…'}
+                                  autoComplete="off"
+                                  style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                                />
+                                <PixelButton
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => setShowMatrixToken((s) => !s)}
+                                  disabled={!matrixToken}
+                                >
+                                  {showMatrixToken ? 'hide' : 'show'}
+                                </PixelButton>
+                              </div>
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                {matrixTokenStored
+                                  ? '🔒 A token is stored, encrypted. Leave this blank to keep it.'
+                                  : 'No token stored yet — the bot can read rooms but cannot reply until you add one.'}
+                              </span>
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                Log the bot account in via POST /_matrix/client/v3/login on your homeserver and paste
+                                its access_token. Write-only: it is encrypted in the main process and never shown again.
+                              </span>
+                            </label>
+
                             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                               <PixelButton variant="primary" size="sm" onClick={() => saveMatrix(matrixEnabled)} disabled={matrixBusy}>
                                 {matrixBusy ? '...' : 'save'}
@@ -1578,8 +1678,9 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             </div>
 
                             <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
-                              Register the bot's access token above under Integrations (template "Matrix") — it's
-                              stored encrypted and reachable only through the loopback broker, never here.
+                              Saving registers the homeserver and token as the "Matrix" integration, so the bot can post
+                              replies through the loopback broker. The token itself never leaves the encrypted store —
+                              the Integrations tab shows the same entry if you'd rather manage it there.
                             </span>
                           </div>
                         )}
