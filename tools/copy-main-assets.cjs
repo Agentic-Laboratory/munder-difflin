@@ -6,6 +6,10 @@ const { dirname, join } = require('node:path');
 const ROOT = join(__dirname, '..');
 const MAIN_ASSETS = [
   ['src/main/slack-trigger.cjs', 'out/main/slack-trigger.cjs'],
+  // Matrix trigger logic — require()d at runtime by matrix.ts. Without this the
+  // packaged app throws "cannot load ./matrix-trigger.cjs" on start(), a failure
+  // neither typecheck nor test:focused can see.
+  ['src/main/matrix-trigger.cjs', 'out/main/matrix-trigger.cjs'],
   // Knowledge Graph core (pure-JS, no native deps) — required by knowledge.ts.
   ['src/main/kg-core.cjs', 'out/main/kg-core.cjs'],
 ];

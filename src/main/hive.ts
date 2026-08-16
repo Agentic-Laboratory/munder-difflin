@@ -116,6 +116,13 @@ export interface HiveTask {
    *  done-summary reply is posted back into. Consumed OUTBOUND only; populating
    *  it is the inbound/kanban side's job and does not affect routing. */
   slack?: { channel: string; thread_ts: string };
+  /** Set when this task originated from a Matrix @-mention — the room and thread
+   *  root the done-summary reply is posted back into. The exact Matrix analogue
+   *  of `slack` above (roomId ≈ channel, threadRootId ≈ thread_ts): consumed
+   *  OUTBOUND only, and populating it never affects routing. Both fields can be
+   *  set on one card only if a message somehow arrived over both transports;
+   *  they are independent lanes with independent done-ledgers. */
+  matrix?: { roomId: string; threadRootId: string };
   /** Set when this task originated from a generic webhook POST. Stores the SHA-256
    *  of the capability token (never the raw token — that's returned to the caller
    *  once and never persisted), so a GET status lookup can match by hashing the

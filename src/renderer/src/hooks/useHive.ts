@@ -790,6 +790,40 @@ export function useHive(config: HarnessConfig | null): void {
       } catch { /* best-effort: card promotion must never sink dispatch */ }
     };
 
+    // Matrix peer of ensureSlackCard. Same promote-on-first-dispatch contract,
+    // same idempotency, same best-effort posture — the card carries
+    // matrix:{roomId,threadRootId} so the main-process Matrix done-observer can
+    // post its one summary reply into the originating thread. Kept as a separate
+    // function rather than a parameterised one so neither transport can ever
+    // write the other's origin field onto a card.
+    const ensureMatrixCard = async (m: QueuedMessage): Promise<void> => {
+      const matrix = m.matrix;
+      if (!matrix) return;
+      try {
+        const raw = await window.cth.hiveTasks();
+        const existing: SlackTaskCard[] =
+          raw && typeof raw === 'object' && Array.isArray((raw as { tasks?: unknown }).tasks)
+            ? (raw as { tasks: SlackTaskCard[] }).tasks
+            : [];
+        // The thread root is stable per conversation and the queued-message id is
+        // unique per request, so the same mention can never promote twice.
+        const id = `matrix-${matrix.threadRootId}-${m.id}`;
+        if (existing.some((t) => t.id === id)) return;
+        const title = m.text.length > 80 ? `${m.text.slice(0, 79)}…` : m.text;
+        const card: SlackTaskCard = {
+          id,
+          title,
+          description: m.text,
+          status: 'todo',
+          dependsOn: [],
+          priority: 1,
+          createdAt: new Date().toISOString(),
+          matrix
+        };
+        await window.cth.hiveWriteTasks([...existing, card]);
+      } catch { /* best-effort: card promotion must never sink dispatch */ }
+    };
+
     const flush = () => {
       const { agents, messageQueues } = useStore.getState();
       const byId = (id: string) => agents.find((a) => a.id === id);
@@ -799,6 +833,7 @@ export function useHive(config: HarnessConfig | null): void {
         if (!messageQueues[a.id]?.length) continue;
         void dispatch(a.id, a).then(({ sent, message }) => {
           if (sent && message?.slack) void ensureSlackCard(message);
+          if (sent && message?.matrix) void ensureMatrixCard(message);
         });
       }
     };
@@ -848,6 +883,32 @@ export function useHive(config: HarnessConfig | null): void {
         thread_ts: msg.thread_ts,
         text: ':hourglass_flowing_sand: *Received.* Your request has been queued — the team is on it and will reply here when done.'
       });
+    });
+  }, [config?.onboardingComplete]);
+
+  // 5a) Pipe inbound Matrix messages into Michael's queue — the peer of effect
+  //     #5 above, running ALONGSIDE Slack, never instead of it. The main-process
+  //     /sync listener has already done echo suppression, mention/thread matching
+  //     and event_id dedup, so anything arriving here is a genuine request.
+  //
+  //     Two deliberate differences from the Slack lane, both because Matrix has
+  //     no equivalent plumbing yet rather than because they were overlooked:
+  //       - NO immediate "queued" acknowledgement. Slack's ack goes out through
+  //         the loopback reply endpoint; Matrix agents reply through the
+  //         integration broker instead, which the renderer cannot reach.
+  //       - NO attachment download. Matrix media arrives as an mxc:// URI that
+  //         needs an authenticated fetch through the homeserver; until that
+  //         exists a media message contributes its text body only.
+  useEffect(() => {
+    if (!config?.onboardingComplete) return;
+    return window.cth.onMatrixMessage?.((msg) => {
+      if (!msg?.text?.trim() || !msg.roomId || !msg.threadRootId) return;
+      const text = msg.text.trim();
+      const matrix = { roomId: msg.roomId, threadRootId: msg.threadRootId };
+      // Same split as Slack: raw `text` drives the human-facing card, while the
+      // autonomy preamble supplied by main is prepended ONLY to god's PTY prompt.
+      const instruction = msg.autonomyPreamble ? `${msg.autonomyPreamble}${text}` : undefined;
+      useStore.getState().enqueueMessage(GOD_ID, text, { matrix, instruction });
     });
   }, [config?.onboardingComplete]);
 

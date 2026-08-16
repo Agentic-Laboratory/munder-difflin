@@ -110,6 +110,9 @@ export interface QueuedMessage {
   ts: number;
   /** Slack-originated: thread coordinates so the office can reply in-thread. */
   slack?: { channel: string; thread_ts: string };
+  /** Matrix-originated: room + thread root so the office can reply in-thread.
+   *  The exact peer of `slack` above; the two lanes never share a field. */
+  matrix?: { roomId: string; threadRootId: string };
   /** Optional override for the text actually typed into the agent's PTY. When set,
    *  the drain submits THIS instead of `text`, while UI/card surfaces keep using
    *  `text`. Used by Slack-origin work to carry the autonomy preamble to god's
@@ -247,7 +250,7 @@ interface State {
   /** Park a message for an agent. Returns nothing; the flush loop delivers it.
    *  `meta.instruction`, when set, is what gets typed into the PTY instead of
    *  `text` (UI/card surfaces still show `text`). */
-  enqueueMessage: (agentId: string, text: string, meta?: { slack?: { channel: string; thread_ts: string }; instruction?: string }) => void;
+  enqueueMessage: (agentId: string, text: string, meta?: { slack?: { channel: string; thread_ts: string }; matrix?: { roomId: string; threadRootId: string }; instruction?: string }) => void;
   /** Drop a single queued message (user removed it, or it was just delivered). */
   removeQueuedMessage: (agentId: string, messageId: string) => void;
   /** "Send now" while floor auto-delivery is paused: marks the message manual
@@ -739,6 +742,7 @@ export const useStore = create<State>((set) => ({
       const msg: QueuedMessage = {
         id: newQueuedId(), text: trimmed, ts: Date.now(),
         ...(meta?.slack ? { slack: meta.slack } : {}),
+        ...(meta?.matrix ? { matrix: meta.matrix } : {}),
         ...(meta?.instruction ? { instruction: meta.instruction } : {})
       };
       const messageQueues = { ...s.messageQueues, [agentId]: [...(s.messageQueues[agentId] ?? []), msg] };

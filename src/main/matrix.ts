@@ -78,13 +78,24 @@ export interface MatrixTriggerModule {
   shouldTrigger(
     ev: MatrixTimelineEventView,
     ownUserId: string | null,
-    roomId: string | undefined,
+    /** F2: a single room id, a set/array of them, or nothing for "any room".
+     *  The config field is `matrixRoomIds` (plural), so the filter has to be
+     *  plural-capable; the singular string form is still accepted verbatim. */
+    roomFilter: MatrixRoomFilter,
     activatedThreads: IActivatedThreads,
     ownDisplayName?: string | null
   ): MatrixTriggerResult;
   ActivatedThreads: new (maxSize?: number) => IActivatedThreads;
   SeenEvents: new (maxSize?: number) => ISeenEvents;
 }
+
+/** Every shape the room filter is allowed to take (see MatrixTriggerModule). */
+export type MatrixRoomFilter =
+  | string
+  | readonly string[]
+  | ReadonlySet<string>
+  | null
+  | undefined;
 
 let _triggerModCache: MatrixTriggerModule | null = null;
 
@@ -194,8 +205,16 @@ export interface MatrixClientOptions {
   /** Bot access token. NEVER logged, never returned in an error. */
   accessToken: string;
   /** Optional room filter — when set, events from other rooms are dropped and
-   *  the room is encryption-checked up front so `start()` can refuse loudly. */
+   *  the room is encryption-checked up front so `start()` can refuse loudly.
+   *  Kept for callers (and tests) that only ever watch one room; `roomIds` is
+   *  the general form and the two are unioned. */
   roomId?: string;
+  /** F2: the plural room filter, matching config `matrixRoomIds`. Empty (or
+   *  absent, with no `roomId`) means "every room the bot is joined to". Each
+   *  entry gets the same membership + encryption preflight as the singular
+   *  form, and ANY unreadable configured room fails `start()` — same
+   *  fail-closed rule M2 chose for one room, applied to the list. */
+  roomIds?: readonly string[];
   /** Called once per accepted message. May be async. */
   onMessage?: (m: MatrixInboundMessage) => void | Promise<void>;
   /** Fired on a fatal transport condition (bad token, target room encrypted). */
@@ -258,7 +277,13 @@ const STATE_PROBE_TIMEOUT_MS = 15_000;
 export class MatrixClient {
   private readonly homeserverUrl: string;
   private readonly accessToken: string;
-  private readonly roomId?: string;
+  /** The configured rooms, in order, deduped and blank-stripped. Empty = watch
+   *  every joined room. */
+  private readonly configuredRooms: readonly string[];
+  /** The same list as a lookup Set, or null when nothing is configured. This is
+   *  the single value handed to both the `/sync` room filter and the trigger
+   *  module, so the two can never disagree (F2). */
+  private readonly roomFilter: ReadonlySet<string> | null;
   private readonly fetchImpl: FetchLike;
   private readonly store: SyncTokenStore;
   private readonly syncTimeoutMs: number;
@@ -301,7 +326,14 @@ export class MatrixClient {
   constructor(opts: MatrixClientOptions) {
     this.homeserverUrl = opts.homeserverUrl.replace(/\/+$/, '');
     this.accessToken = opts.accessToken;
-    this.roomId = opts.roomId?.trim() || undefined;
+    // Union the singular and plural forms so either spelling works and both
+    // together are not a conflict (F2).
+    const rooms = [...(opts.roomIds ?? []), ...(opts.roomId ? [opts.roomId] : [])]
+      .filter((r): r is string => typeof r === 'string')
+      .map((r) => r.trim())
+      .filter(Boolean);
+    this.configuredRooms = [...new Set(rooms)];
+    this.roomFilter = this.configuredRooms.length > 0 ? new Set(this.configuredRooms) : null;
     this.fetchImpl = opts.fetchImpl ?? defaultFetch();
     this.store = opts.syncTokenStore ?? createMemorySyncTokenStore();
     this.syncTimeoutMs = opts.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS;
@@ -366,55 +398,53 @@ export class MatrixClient {
     //    `m.mentions.user_ids` without it.
     this.ownDisplayName = await this.fetchDisplayName(this.ownUserId);
 
-    // 3) TRAP 1 preflight. If we were pointed at ONE room and that room is
-    //    unreadable — we're not in it, or it's encrypted — this bot can never
-    //    work. Say so now, at start, instead of reporting healthy forever while
-    //    seeing nothing. Membership is checked first because "not joined" has a
-    //    clearer fix than "encrypted", and because an unjoined room's state read
-    //    would otherwise 403 and look merely undetermined.
-    if (this.roomId) {
-      const member = await this.isJoinedTo(this.roomId);
+    // 3) TRAP 1 preflight, run over EVERY configured room. If we were pointed at
+    //    a room that is unreadable — we're not in it, or it's encrypted — this
+    //    bot can never work there. Say so now, at start, instead of reporting
+    //    healthy forever while seeing nothing. Membership is checked first
+    //    because "not joined" has a clearer fix than "encrypted", and because an
+    //    unjoined room's state read would otherwise 403 and look merely
+    //    undetermined.
+    //
+    //    FAIL-CLOSED ON ANY ONE ROOM (F2 decision): with a list, a single bad
+    //    entry could plausibly be dropped so the others proceed. It is not.
+    //    M2 chose to refuse start() for one unreadable room precisely so a
+    //    misconfiguration is loud, and silently listening on 2 of 3 configured
+    //    rooms is the same silent-partial-failure it was written to prevent.
+    for (const room of this.configuredRooms) {
+      const member = await this.isJoinedTo(room);
       if (member === false) {
-        const msg =
-          `the bot is NOT JOINED to room ${this.roomId} (checked via /joined_rooms), so /sync ` +
+        return this.failPreflight(
+          `the bot is NOT JOINED to room ${room} (checked via /joined_rooms), so /sync ` +
           'will never deliver a message from it. Invite the bot and accept the invite — this ' +
-          'client does not auto-join. Check the room id for typos too.';
-        this.fatalError = msg;
-        this.log('error', msg);
-        this.onError?.(msg);
-        return { ok: false, error: msg };
+          'client does not auto-join. Check the room id for typos too.'
+        );
       }
       if (member === null) {
-        this.log('warn', `could not verify membership of ${this.roomId} via /joined_rooms — proceeding`);
+        this.log('warn', `could not verify membership of ${room} via /joined_rooms — proceeding`);
       }
 
-      const probe = await this.probeRoomEncryption(this.roomId);
+      const probe = await this.probeRoomEncryption(room);
       if (probe === 'encrypted') {
-        const msg =
-          `room ${this.roomId} is END-TO-END ENCRYPTED. This client reads plaintext ` +
+        return this.failPreflight(
+          `room ${room} is END-TO-END ENCRYPTED. This client reads plaintext ` +
           '`m.room.message` events only and has no megolm/olm stack, so it would connect ' +
           'successfully and never see a single message. Disable encryption for this room, ' +
-          'or point the bot at an unencrypted room.';
-        this.fatalError = msg;
-        this.log('error', msg);
-        this.onError?.(msg);
-        return { ok: false, error: msg };
+          'or point the bot at an unencrypted room.'
+        );
       }
       if (probe === 'forbidden') {
         // Same failure class as encryption: the bot would sync forever and see
         // nothing, because it cannot read this room at all.
-        const msg =
-          `room ${this.roomId} is NOT READABLE by this bot (403 M_FORBIDDEN) — it is almost ` +
+        return this.failPreflight(
+          `room ${room} is NOT READABLE by this bot (403 M_FORBIDDEN) — it is almost ` +
           'certainly not joined to the room, or the room id is wrong. Invite and join the bot ' +
-          'first; syncing would otherwise report healthy while seeing nothing.';
-        this.fatalError = msg;
-        this.log('error', msg);
-        this.onError?.(msg);
-        return { ok: false, error: msg };
+          'first; syncing would otherwise report healthy while seeing nothing.'
+        );
       }
-      if (probe === 'plaintext') this.plaintextRooms.add(this.roomId);
+      if (probe === 'plaintext') this.plaintextRooms.add(room);
       else {
-        this.log('warn', `could not determine encryption state of ${this.roomId} — ` +
+        this.log('warn', `could not determine encryption state of ${room} — ` +
           'proceeding, but m.room.encrypted events will be treated as proof of encryption');
       }
     }
@@ -433,8 +463,20 @@ export class MatrixClient {
     this.running = true;
     this.fatalError = null;
     this.loop = this.runSyncLoop();
-    this.log('info', `connected as ${this.ownUserId}${this.roomId ? ` (room ${this.roomId})` : ' (all joined rooms)'}`);
+    const where = this.configuredRooms.length > 0
+      ? ` (room${this.configuredRooms.length > 1 ? 's' : ''} ${this.configuredRooms.join(', ')})`
+      : ' (all joined rooms)';
+    this.log('info', `connected as ${this.ownUserId}${where}`);
     return { ok: true, userId: this.ownUserId };
+  }
+
+  /** Record a preflight verdict that makes this bot permanently blind, tell
+   *  whoever is listening, and hand the caller the same message. */
+  private failPreflight(msg: string): { ok: false; error: string } {
+    this.fatalError = msg;
+    this.log('error', msg);
+    this.onError?.(msg);
+    return { ok: false, error: msg };
   }
 
   /** Stop the loop. Idempotent and best-effort; aborts any in-flight long poll. */
@@ -703,7 +745,7 @@ export class MatrixClient {
     const joined = body.rooms?.join ?? {};
     for (const [roomId, room] of Object.entries(joined)) {
       if (!this.running) return;
-      if (this.roomId && roomId !== this.roomId) continue;
+      if (this.roomFilter && !this.roomFilter.has(roomId)) continue;
       this.seenRooms.add(roomId);
 
       const timeline = room?.timeline?.events ?? [];
@@ -751,8 +793,9 @@ export class MatrixClient {
     this.log('error', msg);
     this.lastError = msg;
     this.onError?.(msg);
-    // Pointed at exactly this room? Then nothing will ever work — go fatal.
-    if (this.roomId && roomId === this.roomId) this.fail(msg);
+    // Was this room explicitly configured? Then part of what the operator asked
+    // for can never work — go fatal rather than quietly serving the remainder.
+    if (this.roomFilter?.has(roomId)) this.fail(msg);
   }
 
   /** Normalize one timeline event and, if the trigger layer says so, emit it. */
@@ -777,7 +820,7 @@ export class MatrixClient {
 
     let verdict: MatrixTriggerResult;
     try {
-      verdict = mod.shouldTrigger(ev, this.ownUserId, this.roomId, threads, this.ownDisplayName);
+      verdict = mod.shouldTrigger(ev, this.ownUserId, this.roomFilter, threads, this.ownDisplayName);
     } catch (e) {
       this.log('warn', `shouldTrigger threw for ${eventId}: ${errMsg(e)}`);
       return;

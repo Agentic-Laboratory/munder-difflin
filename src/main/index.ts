@@ -33,6 +33,7 @@ import { PersistStore } from './db';
 import { readAgentUsage, readContextTokens, seedSessionTranscript, resolveSessionCwd } from './transcript';
 import { listIssues, listCIRuns } from './github';
 import { SlackWebhookServer, SlackReplyServer, postSlackReply, type SlackEventFile } from './slack';
+import { MatrixClient, sendMatrixMessage, createFileSyncTokenStore } from './matrix';
 import {
   WebhookServer,
   type WebhookDispatch, type WebhookEndpointRef, type WebhookInbound, type WebhookTaskStatus
@@ -1564,6 +1565,316 @@ function stopSlackServer(): void {
   try { if (existsSync(slackReplyConfigPath())) unlinkSync(slackReplyConfigPath()); } catch { /* noop */ }
 }
 
+// ─── Matrix listener (Matrix @-mention → Michael's queue) ────────────────────
+//
+// A PEER of the Slack lane above, not a replacement: both can run at once and
+// nothing here touches Slack state. The shape is deliberately the same —
+// inbound listener → renderer IPC → Michael's queue → kanban card; card reaches
+// 'done' → one summary reply in the originating thread — so there is one mental
+// model for both transports.
+//
+// Where it necessarily differs from Slack, and why:
+//   * NO tunnel. /sync is an OUTBOUND long poll to the homeserver, so a
+//     self-hosted server needs no inbound port and no public URL. That is the
+//     whole reason there is no matrix:start/matrix:stop button pair: with no
+//     ephemeral URL to fetch, the listener can simply be reconciled from config.
+//   * NO bespoke reply endpoint or bundled helper. Slack hands agents a
+//     loopback `md-slack-reply.cjs` so they never see the bot token; on Matrix
+//     that job already belongs to the integration broker, which proxies an
+//     authenticated client-server call without the token ever entering an
+//     agent's environment. Nothing new is needed, so nothing new is built.
+//   * The access token lives in the ENCRYPTED secret store behind a registered
+//     "Matrix" integration — never in config.json, never in an agent's env.
+
+/** The running Matrix /sync listener, or null when disabled/stopped. */
+let matrixClient: MatrixClient | null = null;
+
+/** Reason the last start attempt failed, surfaced by `matrix:status` so a
+ *  misconfiguration is visible in Settings rather than only in the console. */
+let matrixLastStartError: string | null = null;
+
+/**
+ * Autonomy policy for a Matrix-origin request, mirroring
+ * `buildAutonomousRequestProtocol`. The Slack version hands the worker an exact
+ * reply command; Matrix has no such helper (see the header note), so the loop is
+ * closed through the card instead: whoever finishes the work writes a
+ * substantive `result` onto the kanban card, and the done-observer below posts
+ * exactly that back into the thread.
+ */
+function buildAutonomousMatrixProtocol(roomId: string, threadRootId: string): string {
+  return `[AUTONOMOUS REQUEST PROTOCOL — this request arrived via Matrix; no interactive human is watching] Handle it under this protocol:
+1. NO CLARIFYING QUESTIONS back to the requester. Decide, state your assumption, and proceed.
+2. DELEGATE — hand the work to the right agent and tell them to complete it autonomously.
+3. CLOSE THE LOOP THROUGH THE CARD — this request is on the kanban as a card carrying matrix:{roomId ${roomId}, threadRootId ${threadRootId}}. When the work is finished, set that card's "result" to a SUBSTANTIVE answer (the actual outcome, specifics, paths — never a bare "done") and move it to status "done". The harness posts that result back into this Matrix thread exactly once.
+4. The reply goes out over the app's own credentials. Do NOT ask any agent for a Matrix access token and do NOT put one in a prompt or an env var — outbound Matrix calls go through the integration broker.
+
+The request follows.
+
+`;
+}
+
+// ─── Matrix done-notifier (Matrix-origin task → done → one summary reply) ────
+/** Polls the shared kanban for Matrix-origin tasks that reach 'done' and posts
+ *  one in-thread summary each. Its own timer, its own persisted ledger and its
+ *  own baseline — sharing Slack's would cross-suppress the two lanes, so a card
+ *  answered on one transport would go silent on the other. OUTBOUND-only. */
+let matrixDoneTimer: ReturnType<typeof setInterval> | null = null;
+/** Re-entrancy guard: a slow homeserver must not stack overlapping passes. */
+let matrixDonePolling = false;
+/** Task ids already answered, so a reply is posted exactly once per card. */
+let matrixDoneNotified: Set<string> | null = null;
+/** Cards already 'done' when this session started — never retro-answered. */
+let matrixDoneBaseline: Set<string> | null = null;
+
+/** Ledger of Matrix-origin cards already answered. Separate file from Slack's. */
+function matrixDoneNotifiedPath(): string {
+  return join(app.getPath('userData'), 'matrix-done-notified.json');
+}
+
+/** Where `next_batch` is persisted (TRAP 2 — without this every restart either
+ *  replays or skips events). userData, not the hive: it is client state, not
+ *  something that should ride along on a changeHome move. */
+function matrixSyncTokenPath(): string {
+  return join(app.getPath('userData'), 'matrix-sync-token.json');
+}
+
+function loadMatrixDoneNotified(): Set<string> {
+  try {
+    const arr = JSON.parse(readFileSync(matrixDoneNotifiedPath(), 'utf8'));
+    return new Set(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : []);
+  } catch { return new Set(); }
+}
+
+function persistMatrixDoneNotified(set: Set<string>): void {
+  try { writeFileSync(matrixDoneNotifiedPath(), JSON.stringify([...set])); }
+  catch (e) { console.error('[matrix] could not persist done-notify ledger:', e); }
+}
+
+/** Matrix errcodes that no amount of retrying will fix for this config — the
+ *  peer of TERMINAL_SLACK_ERRORS. Matched as substrings because the transport
+ *  hands back a rendered `HTTP <status> <errcode> <error>` string. */
+const TERMINAL_MATRIX_ERRORS = [
+  'M_UNKNOWN_TOKEN',   // token revoked or wrong homeserver
+  'M_MISSING_TOKEN',
+  'M_FORBIDDEN',       // not in the room / not allowed to post
+  'M_USER_DEACTIVATED'
+];
+
+/** The card's outcome, trimmed for a chat message. Same fallback ladder as
+ *  Slack's: result, then description, then the title. */
+function matrixDoneSummary(task: HiveTask): string {
+  const body = (task.result ?? task.description ?? '').trim();
+  const text = body || task.title;
+  return text.length > 3000 ? `${text.slice(0, 2999)}…` : text;
+}
+
+/**
+ * Resolve the OUTBOUND Matrix credentials: the homeserver from config, the
+ * access token from the ENCRYPTED secret store behind a registered integration.
+ *
+ * The token is never read from config.json and never crosses IPC — it is
+ * decrypted here, in main, for the duration of one send. Resolution prefers the
+ * conventional id `matrix` (the template's `idSuggestion`) and falls back to a
+ * record labelled "Matrix", and requires the same conditions `enabledIds()`
+ * does: enabled, and actually holding a secret.
+ */
+function matrixOutboundCredentials(): { homeserverUrl: string; accessToken: string } | null {
+  const homeserverUrl = readConfig().matrixHomeserverUrl?.trim();
+  if (!homeserverUrl) return null;
+  const records = integrations.listRecords();
+  const record =
+    records.find((r) => r.id === 'matrix') ??
+    records.find((r) => r.label.trim().toLowerCase() === 'matrix');
+  if (!record) return null;
+  if (!record.enabled) return null;
+  const accessToken = integrations.getSecret(record.secretRef);
+  if (!accessToken) return null;
+  return { homeserverUrl, accessToken };
+}
+
+/** One observation pass over the kanban. Posts a summary for any Matrix-origin
+ *  card that has newly reached 'done' since this session started. */
+async function pollMatrixDoneTasks(): Promise<void> {
+  if (matrixDonePolling) return;
+  const creds = matrixOutboundCredentials();
+  if (!creds) return; // no token yet — say nothing rather than half-report
+
+  let tasks: HiveTask[];
+  try {
+    const ledger = hive.tasks() as { tasks?: HiveTask[] };
+    tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
+  } catch { return; } // unreadable/missing tasks.json → skip this tick
+
+  const notified = matrixDoneNotified ?? (matrixDoneNotified = loadMatrixDoneNotified());
+
+  // Seed the baseline on the first tick of the session so cards that were
+  // already done before the app opened are not answered retroactively.
+  if (matrixDoneBaseline === null) {
+    matrixDoneBaseline = new Set(tasks.filter((t) => t.status === 'done').map((t) => t.id));
+    return;
+  }
+  const baseline = matrixDoneBaseline;
+
+  matrixDonePolling = true;
+  try {
+    for (const t of tasks) {
+      if (t.status !== 'done') continue;
+      if (baseline.has(t.id) || notified.has(t.id)) continue;
+      const m = t.matrix;
+      if (!m || !m.roomId || !m.threadRootId) continue; // non-Matrix-origin → leave alone
+      // Nothing to say → mark handled rather than posting the bare title twice.
+      if (!(t.result ?? t.description ?? '').trim()) {
+        notified.add(t.id); persistMatrixDoneNotified(notified); continue;
+      }
+      const res = await sendMatrixMessage({
+        homeserverUrl: creds.homeserverUrl,
+        accessToken: creds.accessToken,
+        roomId: m.roomId,
+        threadRootId: m.threadRootId,
+        text: matrixDoneSummary(t)
+      });
+      if (res.ok) {
+        notified.add(t.id);
+        persistMatrixDoneNotified(notified); // mark-on-success → exactly one delivered reply
+      } else if (res.error && TERMINAL_MATRIX_ERRORS.some((e) => res.error!.includes(e))) {
+        // Permanent for this config: retrying every 5s would just spin forever.
+        notified.add(t.id);
+        persistMatrixDoneNotified(notified);
+        console.error('[matrix] done-summary post for task', t.id,
+          '— giving up (terminal error:', res.error + '). Check the bot is joined to the room and the ' +
+          'stored access token is valid; later tasks post once resolved.');
+      } else {
+        console.error('[matrix] done-summary post failed for task', t.id, '-', res.error, '(will retry)');
+      }
+    }
+  } finally {
+    matrixDonePolling = false;
+  }
+}
+
+/** Begin watching the kanban for Matrix-origin done-transitions (idempotent). */
+function startMatrixDoneObserver(): void {
+  if (matrixDoneTimer) return;
+  matrixDoneNotified = loadMatrixDoneNotified();
+  matrixDoneBaseline = null; // re-seed on the first tick of this session
+  matrixDoneTimer = setInterval(() => { void pollMatrixDoneTasks(); }, 5000);
+}
+
+/** Stop the done-observer. Idempotent. */
+function stopMatrixDoneObserver(): void {
+  if (matrixDoneTimer) { clearInterval(matrixDoneTimer); matrixDoneTimer = null; }
+  matrixDoneBaseline = null;
+}
+
+/**
+ * Build a MatrixClient from the current config + stored token and start it,
+ * replacing any running instance. No-op + error result when the integration is
+ * disabled or not fully configured.
+ *
+ * `start()` resolves only AFTER the identity and per-room encryption preflight,
+ * so an `ok: true` here means the bot can genuinely see messages in every
+ * configured room — the point of the E2EE trap. An encrypted or unjoined room
+ * fails the whole start rather than quietly listening to the readable remainder.
+ */
+async function startMatrixClient(): Promise<{ ok: boolean; userId?: string; error?: string }> {
+  const cfg = readConfig();
+  if (!cfg.matrixEnabled) {
+    stopMatrixClient();
+    return { ok: false, error: 'matrix disabled' };
+  }
+  if (!cfg.matrixHomeserverUrl?.trim()) {
+    return { ok: false, error: 'matrix homeserver url not set' };
+  }
+  const creds = matrixOutboundCredentials();
+  if (!creds) {
+    // Loud, not silent: the commonest setup mistake is turning Matrix on in
+    // Settings without registering the integration that holds the token.
+    const error =
+      'no usable Matrix access token — register an enabled "Matrix" integration ' +
+      '(Settings → Integrations) and paste the bot access token into it. The token is stored ' +
+      'encrypted and is never handed to an agent.';
+    console.error('[matrix]', error);
+    matrixLastStartError = error;
+    return { ok: false, error };
+  }
+
+  stopMatrixClient();
+  const client = new MatrixClient({
+    homeserverUrl: creds.homeserverUrl,
+    accessToken: creds.accessToken,
+    // F2: the config field is plural and feeds the filter directly. Empty means
+    // "every room the bot is joined to", matching the config default of [].
+    roomIds: cfg.matrixRoomIds ?? [],
+    syncTokenStore: createFileSyncTokenStore(matrixSyncTokenPath()),
+    onError: (error) => { console.error('[matrix]', error); },
+    // Fires from the /sync loop (not the IPC thread); route through
+    // liveWebContents() so a message arriving during window teardown can't throw.
+    onMessage: (m) => {
+      const ipcMsg = {
+        text: m.text,
+        roomId: m.roomId,
+        eventId: m.eventId,
+        threadRootId: m.threadRootId,
+        sender: m.sender,
+        // Built PER MESSAGE so the protocol block names THIS request's room and
+        // thread root. Prepended by the renderer to god's PTY prompt only, so the
+        // kanban card title stays the human's raw text.
+        autonomyPreamble: buildAutonomousMatrixProtocol(m.roomId, m.threadRootId)
+      };
+      try { liveWebContents()?.send('matrix:incomingMessage', ipcMsg); }
+      catch { /* window torn down */ }
+    }
+  });
+
+  const res = await client.start();
+  if (!res.ok) {
+    matrixLastStartError = res.error ?? 'unknown error';
+    return res;
+  }
+  matrixClient = client;
+  matrixLastStartError = null;
+  // Cross-check the operator's declared bot mxid against whoami. whoami is
+  // authoritative (echo suppression uses it, so the bot cannot answer itself
+  // either way), but a mismatch means the stored token belongs to a DIFFERENT
+  // account than Settings claims — worth saying out loud, since the symptom is
+  // otherwise just "the bot replies under a name nobody recognises".
+  const declared = cfg.matrixUserId?.trim();
+  if (declared && res.userId && declared !== res.userId) {
+    console.warn(
+      `[matrix] configured matrixUserId (${declared}) does not match the account the stored ` +
+      `access token belongs to (${res.userId}). Using ${res.userId}; update Settings or the ` +
+      'integration token so the two agree.'
+    );
+  }
+  // Watch the kanban for Matrix-origin cards reaching 'done'. OUTBOUND-only;
+  // never touches ingestion, and safe to run even if /sync later goes fatal.
+  startMatrixDoneObserver();
+  analytics.trackFeature('matrix_trigger');
+  return res;
+}
+
+/** Stop and forget the Matrix listener (+ done-observer). Best-effort; safe to
+ *  call when not running. The persisted next_batch is deliberately KEPT so a
+ *  restart resumes where it left off instead of replaying or skipping. */
+function stopMatrixClient(): void {
+  try { matrixClient?.stop(); } catch (e) { console.error('[matrix] stop failed:', e); }
+  matrixClient = null;
+  stopMatrixDoneObserver();
+}
+
+/** Bring the running listener in line with the current config. Called from the
+ *  generic `config:update` handler, since Settings saves Matrix through that
+ *  rather than a bespoke start/stop pair. Restarting on every change is correct
+ *  and cheap: homeserver, room list and enablement are all constructor-time. */
+function reconcileMatrixClient(): void {
+  const cfg = readConfig();
+  if (!cfg.matrixEnabled) { stopMatrixClient(); return; }
+  void startMatrixClient().then((r) => {
+    if (!r.ok) console.error('[matrix] listener not started:', r.error);
+    else console.log('[matrix] /sync listening as', r.userId);
+  });
+}
+
 // ─── Generic inbound webhook + status API (multi-endpoint) ───────────────────
 /** The running generic-webhook server, or null when disabled/stopped. A PUBLIC
  *  (tunnel-forwarded) surface — secret-gated, unlike the loopback /reply. ONE
@@ -2860,6 +3171,15 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
   const next = writeConfig(patch);
   // Live opt-in/out from Settings → Privacy (TELEMETRY.md).
   if (typeof patch?.telemetryEnabled === 'boolean') analytics.setEnabled(patch.telemetryEnabled);
+  // Matrix has no bespoke start/stop IPC (see the Matrix listener section): the
+  // Settings pane saves through this generic handler, so this is where the /sync
+  // listener is brought back in line. Gated on the patch actually carrying a
+  // matrix key — otherwise every unrelated config write would churn the long poll.
+  const touchesMatrix = patch != null && (
+    'matrixEnabled' in patch || 'matrixHomeserverUrl' in patch ||
+    'matrixUserId' in patch || 'matrixRoomIds' in patch
+  );
+  if (touchesMatrix) reconcileMatrixClient();
   return next;
 });
 ipcMain.handle('config:ensureHome', (_evt, path: unknown) => {
@@ -2903,6 +3223,7 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
   try { hive.stopRouter(); } catch (e) { console.error('[changeHome] stopRouter:', e); }
   try { hookServer.stop(); } catch (e) { console.error('[changeHome] hookServer.stop:', e); }
   try { stopSlackServer(); } catch (e) { console.error('[changeHome] slack.stop:', e); }
+  try { stopMatrixClient(); } catch (e) { console.error('[changeHome] matrix.stop:', e); }
   try { stopWebhookServer(); } catch (e) { console.error('[changeHome] webhook.stop:', e); }
   try { memory.stop(); } catch (e) { console.error('[changeHome] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[changeHome] reflector.stop:', e); }
@@ -2927,6 +3248,7 @@ ipcMain.handle('config:changeHome', async (_evt, payload: unknown) => {
       bootstrapHiveServices();
       const cfg = readConfig();
       if (cfg.slackEnabled && cfg.slackSigningSecret) void startSlackServer();
+      if (cfg.matrixEnabled) reconcileMatrixClient();
       reconcileWebhookServer();
       return { ok: false, error: `Could not copy data: ${e instanceof Error ? e.message : String(e)}` };
     }
@@ -3220,6 +3542,7 @@ function teardownAndQuit(): void {
   try { hookServer.stop(); } catch (e) { console.error('[quit] hookServer.stop:', e); }
   try { telemetry.stop(); } catch (e) { console.error('[quit] telemetry.stop:', e); }
   try { stopSlackServer(); } catch (e) { console.error('[quit] slack.stop:', e); }
+  try { stopMatrixClient(); } catch (e) { console.error('[quit] matrix.stop:', e); }
   try { stopWebhookServer(); } catch (e) { console.error('[quit] webhook.stop:', e); }
   try { memory.stop(); } catch (e) { console.error('[quit] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[quit] reflector.stop:', e); }
@@ -3277,6 +3600,7 @@ ipcMain.handle('app:resetAll', () => {
   try { hookServer.stop(); } catch (e) { console.error('[reset] hookServer.stop:', e); }
   try { telemetry.stop(); } catch (e) { console.error('[reset] telemetry.stop:', e); }
   try { stopSlackServer(); } catch (e) { console.error('[reset] slack.stop:', e); }
+  try { stopMatrixClient(); } catch (e) { console.error('[reset] matrix.stop:', e); }
   try { memory.stop(); } catch (e) { console.error('[reset] memory.stop:', e); }
   try { reflector.stop(); } catch (e) { console.error('[reset] reflector.stop:', e); }
   try { persist.close(); } catch (e) { console.error('[reset] persist.close:', e); }
@@ -3509,6 +3833,26 @@ ipcMain.handle('app:openExternal', async (_evt, url: unknown) => {
 ipcMain.handle('app:setLoginItem', (_evt, enabled: unknown) => {
   app.setLoginItemSettings({ openAtLogin: enabled === true });
   return app.getLoginItemSettings().openAtLogin;
+});
+
+// ─── IPC: Matrix integration ────────────────────────────────────────────────
+/** Health snapshot of the /sync listener. Read-only and secret-free — it never
+ *  returns the homeserver token, only whether the bot is up, who it is, and
+ *  which rooms proved unreadable. There is no matrix:start/matrix:stop pair:
+ *  the listener is reconciled from config:update (no tunnel URL to fetch). */
+ipcMain.handle('matrix:status', () => {
+  const s = matrixClient?.getStatus();
+  if (!s) {
+    return {
+      running: false, healthy: false, userId: null, encryptedRooms: [],
+      messagesEmitted: 0, lastError: matrixLastStartError, fatalError: matrixLastStartError
+    };
+  }
+  return {
+    running: s.running, healthy: s.healthy, userId: s.userId,
+    encryptedRooms: s.encryptedRooms, messagesEmitted: s.messagesEmitted,
+    lastError: s.lastError, fatalError: s.fatalError
+  };
 });
 
 // ─── IPC: Slack integration ─────────────────────────────────────────────────
@@ -4577,6 +4921,16 @@ app.whenReady().then(() => {
     void startSlackServer().then((r) => {
       if (!r.ok) console.error('[slack] auto-start failed:', r.error);
       else console.log('[slack] webhook listening', r.url ? `(tunnel: ${r.url})` : '(no tunnel)');
+    });
+  }
+  // Auto-start the Matrix /sync listener when configured. Best-effort and quiet
+  // on the happy path; a refusal (encrypted room, unjoined bot, missing token)
+  // is logged loudly because every one of those looks like "connected fine, sees
+  // nothing" otherwise. No tunnel is involved — /sync is an outbound long poll.
+  if (readConfig().matrixEnabled) {
+    void startMatrixClient().then((r) => {
+      if (!r.ok) console.error('[matrix] auto-start failed:', r.error);
+      else console.log('[matrix] /sync listening as', r.userId);
     });
   }
   // Auto-start the generic webhook only for endpoints the user has explicitly

@@ -145,6 +145,37 @@ function bodyMentionsUser(content, ownUserId) {
   return body.includes(pill) || formattedBody.includes(pill);
 }
 
+/**
+ * Normalize a room filter into a Set, or null for "no filter".
+ *
+ * F2 (interface seam, raised at M3 and resolved at M4): this module originally
+ * took a SINGULAR roomId while the config field `matrixRoomIds` is an ARRAY, so
+ * a multi-room deployment had no way to express itself. Rather than fanning the
+ * mismatch out to every call site, the filter is widened HERE, once, and both
+ * shapes stay valid:
+ *   - a string  → filter to that one room (the original contract, unchanged)
+ *   - an array / Set → filter to any of them
+ *   - null / undefined / '' / [] → no filter, accept every room
+ *
+ * Blank entries are dropped so an empty textarea line in Settings cannot turn
+ * into a filter that matches nothing.
+ *
+ * @param {string|string[]|Set<string>|null|undefined} roomFilter
+ * @returns {Set<string>|null}
+ */
+function normalizeRoomFilter(roomFilter) {
+  if (roomFilter == null) return null;
+  const list =
+    typeof roomFilter === 'string'
+      ? [roomFilter]
+      : (roomFilter instanceof Set ? [...roomFilter] : (Array.isArray(roomFilter) ? roomFilter : []));
+  const cleaned = list
+    .filter((r) => typeof r === 'string')
+    .map((r) => r.trim())
+    .filter(Boolean);
+  return cleaned.length > 0 ? new Set(cleaned) : null;
+}
+
 /** msgtypes that carry a downloadable attachment. */
 const MEDIA_MSGTYPES = new Set(['m.image', 'm.file', 'm.video', 'm.audio']);
 
@@ -174,18 +205,32 @@ function extractFiles(ev, content) {
  *                          self-labeled). Any shape, may be partial.
  * @param ownUserId       - The bot's own mxid (e.g. "@bot:server.tld"), or null
  *                          if not yet known.
- * @param roomId          - Room filter (string) or null/undefined for any room.
+ * @param roomFilter      - Room filter: a single room id, an array/Set of room
+ *                          ids (config `matrixRoomIds`), or null/undefined for
+ *                          any room. See normalizeRoomFilter — this is the F2
+ *                          reconciliation point.
  * @param activatedThreads - Mutable ActivatedThreads instance (mutated on mention)
+ * @param ownDisplayName  - The bot's profile display name. ACCEPTED AND
+ *                          DELIBERATELY UNUSED: matching a bare display name in
+ *                          the body is the same unguarded-substring hazard that
+ *                          bodyMentionsUser refuses for the bare mxid, only
+ *                          worse (display names are short, common words). It is
+ *                          in the signature so the TypeScript contract in
+ *                          matrix.ts (MatrixTriggerModule) and this
+ *                          implementation visibly agree instead of one side
+ *                          silently dropping an argument. Pill and
+ *                          m.mentions.user_ids cover the real mention forms.
  * @returns {{ trigger: boolean, text: string, files: object[] }} — trigger: whether
  *          to fire onMessage; text: the raw content.body string; files: attachment
  *          metadata extracted from a media message (empty when none/text-only).
  */
-function shouldTrigger(ev, ownUserId, roomId, activatedThreads) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function shouldTrigger(ev, ownUserId, roomFilter, activatedThreads, ownDisplayName) {
   if (!ev) return { trigger: false, text: '', files: [] };
 
-  // Room filter
-  const roomOk = !roomId || ev.room_id === roomId;
-  if (!roomOk) return { trigger: false, text: '', files: [] };
+  // Room filter — singular id, array of ids, or nothing at all (F2).
+  const rooms = normalizeRoomFilter(roomFilter);
+  if (rooms && !rooms.has(ev.room_id)) return { trigger: false, text: '', files: [] };
 
   // ECHO SUPPRESSION — the bot sees its own sends come back through /sync.
   // This MUST be checked before any mention/thread logic, or a self-mention
@@ -239,6 +284,7 @@ function shouldTrigger(ev, ownUserId, roomId, activatedThreads) {
 
 module.exports = {
   shouldTrigger,
+  normalizeRoomFilter,
   ActivatedThreads,
   SeenEvents,
   dedupKey,

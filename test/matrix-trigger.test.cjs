@@ -13,6 +13,7 @@ const assert = require('node:assert/strict');
 
 const {
   shouldTrigger,
+  normalizeRoomFilter,
   ActivatedThreads,
   SeenEvents,
   dedupKey,
@@ -447,4 +448,83 @@ test('integration: echo suppression prevents an infinite reply loop end-to-end',
     content: { body: 'here you go', 'm.relates_to': { rel_type: 'm.thread', event_id: '$A001' } },
   }));
   assert.equal(fires, 1, 'only the user message fires; the bot echo must not');
+});
+
+// ─── F2: plural room filter ──────────────────────────────────────────────────
+// The config field is `matrixRoomIds` (an array) while shouldTrigger originally
+// took a singular id. The filter is now normalized in one place and accepts
+// both spellings; these lock that reconciliation down.
+
+test('normalizeRoomFilter maps every accepted shape onto a Set or null', () => {
+  assert.equal(normalizeRoomFilter(null), null, 'null → no filter');
+  assert.equal(normalizeRoomFilter(undefined), null, 'undefined → no filter');
+  assert.equal(normalizeRoomFilter(''), null, 'empty string → no filter');
+  assert.equal(normalizeRoomFilter([]), null, 'empty array → no filter');
+  assert.equal(normalizeRoomFilter(['  ', '']), null, 'blank-only array → no filter');
+
+  assert.deepEqual(normalizeRoomFilter(ROOM), new Set([ROOM]));
+  assert.deepEqual(normalizeRoomFilter([ROOM, '!b:server.tld']), new Set([ROOM, '!b:server.tld']));
+  assert.deepEqual(normalizeRoomFilter(new Set([ROOM])), new Set([ROOM]));
+  assert.deepEqual(normalizeRoomFilter([` ${ROOM} `, '', null]), new Set([ROOM]),
+    'entries are trimmed and blanks/non-strings dropped');
+});
+
+test('array room filter admits every listed room and rejects the rest', () => {
+  const other = '!other:server.tld';
+  const rooms = [ROOM, other];
+  const mention = { body: 'ping', 'm.mentions': { user_ids: [BOT_ID] } };
+
+  const threads = new ActivatedThreads();
+  assert.equal(
+    shouldTrigger(ev({ event_id: '$F201', content: mention }), BOT_ID, rooms, threads).trigger,
+    true, 'first configured room triggers');
+  assert.equal(
+    shouldTrigger(ev({ event_id: '$F202', room_id: other, content: mention }), BOT_ID, rooms, threads).trigger,
+    true, 'second configured room triggers');
+  assert.equal(
+    shouldTrigger(ev({ event_id: '$F203', room_id: '!nope:server.tld', content: mention }), BOT_ID, rooms, threads).trigger,
+    false, 'an unlisted room is filtered out');
+  assert.equal(threads.size, 2, 'only the two admitted messages activated a thread');
+});
+
+test('a Set room filter behaves identically to the array form', () => {
+  const threads = new ActivatedThreads();
+  const mention = { body: 'ping', 'm.mentions': { user_ids: [BOT_ID] } };
+  assert.equal(
+    shouldTrigger(ev({ event_id: '$F204', content: mention }), BOT_ID, new Set([ROOM]), threads).trigger, true);
+  assert.equal(
+    shouldTrigger(ev({ event_id: '$F205', room_id: '!x:server.tld', content: mention }), BOT_ID, new Set([ROOM]), threads).trigger, false);
+});
+
+test('an empty room list means "any room", matching the config default of []', () => {
+  const threads = new ActivatedThreads();
+  const mention = { body: 'ping', 'm.mentions': { user_ids: [BOT_ID] } };
+  assert.equal(
+    shouldTrigger(ev({ event_id: '$F206', room_id: '!anywhere:server.tld', content: mention }), BOT_ID, [], threads).trigger,
+    true, 'no configured rooms → unfiltered, same as the singular null case');
+});
+
+test('the room filter is applied before echo suppression cannot be bypassed', () => {
+  // A bot echo arriving from a CONFIGURED room must still be suppressed — the
+  // widened filter must not have reordered the guards.
+  const threads = new ActivatedThreads();
+  const result = shouldTrigger(
+    ev({ event_id: '$F207', sender: BOT_ID, content: { body: 'mine', 'm.mentions': { user_ids: [BOT_ID] } } }),
+    BOT_ID, [ROOM], threads
+  );
+  assert.equal(result.trigger, false);
+  assert.equal(threads.size, 0);
+});
+
+test('ownDisplayName is accepted and deliberately does NOT match on its own', () => {
+  // Passing a 5th argument must not throw (matrix.ts always passes one), and a
+  // bare display name in the body must NOT be treated as a mention — that is
+  // the unguarded-substring hazard bodyMentionsUser already refuses for mxids.
+  const threads = new ActivatedThreads();
+  const result = shouldTrigger(
+    ev({ event_id: '$F208', content: { body: 'Michael, can you look at this?' } }),
+    BOT_ID, [ROOM], threads, 'Michael'
+  );
+  assert.equal(result.trigger, false);
+  assert.equal(threads.size, 0);
 });

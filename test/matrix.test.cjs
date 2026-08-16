@@ -566,3 +566,140 @@ test('a missing access token or homeserver is refused before any request', async
   assert.deepEqual(await bare.start(), { ok: false, error: 'missing access token' });
   assert.equal(hs.calls.length, 0);
 });
+
+// ── F2: the plural room filter (matrixRoomIds) ──────────────────────────────
+// Config carries `matrixRoomIds` (an array) while the client and trigger module
+// were written around a singular id. The union of `roomId` + `roomIds` is now
+// normalized once and drives BOTH the preflight and the /sync filter.
+
+const ROOM_B = '!second:example.org';
+const ROOM_C = '!unlisted:example.org';
+
+/** Homeserver whose encryption answer and membership are per-room. */
+function makeMultiRoomHomeserver(opts = {}) {
+  const joined = opts.joinedRooms || [ROOM, ROOM_B, ROOM_C];
+  const encrypted = new Set(opts.encryptedRooms || []);
+  const syncs = (opts.syncs || []).slice();
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url.includes('/account/whoami')) return jsonRes(200, { user_id: BOT });
+    if (url.includes('/displayname')) return jsonRes(200, { displayname: 'Michael' });
+    if (url.includes('/joined_rooms')) return jsonRes(200, { joined_rooms: joined });
+    if (url.includes('/state/m.room.encryption')) {
+      const hit = [...encrypted].find((r) => url.includes(encodeURIComponent(r)));
+      return hit
+        ? jsonRes(200, { algorithm: 'm.megolm.v1.aes-sha2' })
+        : jsonRes(404, { errcode: 'M_NOT_FOUND' });
+    }
+    if (url.includes('/sync')) {
+      if (syncs.length === 0) return park(init.signal);
+      return jsonRes(200, syncs.shift());
+    }
+    return jsonRes(404, { errcode: 'M_UNRECOGNIZED' });
+  };
+  return { fetchImpl, calls };
+}
+
+/** A /sync batch carrying timeline events for several rooms at once. */
+function multiRoomBatch(nextBatch, byRoom) {
+  const join = {};
+  for (const [roomId, events] of Object.entries(byRoom)) {
+    join[roomId] = { timeline: { events }, state: { events: [] } };
+  }
+  return { next_batch: nextBatch, rooms: { join } };
+}
+
+test('roomIds: every configured room is listened to, unlisted rooms are dropped', async () => {
+  const hs = makeMultiRoomHomeserver({
+    syncs: [
+      { next_batch: 's0' },
+      multiRoomBatch('s1', {
+        [ROOM]: [msgEvent({ event_id: '$a', content: { msgtype: 'm.text', body: '!bot from A' } })],
+        [ROOM_B]: [msgEvent({ event_id: '$b', content: { msgtype: 'm.text', body: '!bot from B' } })],
+        [ROOM_C]: [msgEvent({ event_id: '$c', content: { msgtype: 'm.text', body: '!bot from C' } })]
+      })
+    ]
+  });
+  const { client, received } = makeClient(hs, { roomIds: [ROOM, ROOM_B] });
+
+  const res = await client.start();
+  assert.equal(res.ok, true, res.error);
+  await until(() => received.length >= 2);
+  client.stop();
+
+  const rooms = received.map((m) => m.roomId).sort();
+  assert.deepEqual(rooms, [ROOM, ROOM_B].sort(), 'both configured rooms delivered');
+  assert.ok(!received.some((m) => m.roomId === ROOM_C), 'the unlisted room must never be delivered');
+});
+
+test('roomIds: ONE encrypted room in the list fails start() closed and names it', async () => {
+  const hs = makeMultiRoomHomeserver({ encryptedRooms: [ROOM_B] });
+  const { client, errors } = makeClient(hs, { roomIds: [ROOM, ROOM_B] });
+
+  const res = await client.start();
+  client.stop();
+
+  assert.equal(res.ok, false, 'a partially-readable configuration must not start');
+  assert.match(res.error, /END-TO-END ENCRYPTED/);
+  assert.match(res.error, new RegExp(ROOM_B.replace(/[!$]/g, '\\$&')), 'names the offending room');
+  assert.equal(client.getStatus().healthy, false);
+  assert.ok(errors.length > 0, 'onError fired');
+});
+
+test('roomIds: an unjoined room in the list fails start() closed', async () => {
+  const hs = makeMultiRoomHomeserver({ joinedRooms: [ROOM] });
+  const { client } = makeClient(hs, { roomIds: [ROOM, ROOM_B] });
+
+  const res = await client.start();
+  client.stop();
+
+  assert.equal(res.ok, false);
+  assert.match(res.error, /NOT JOINED/);
+});
+
+test('roomIds and roomId are unioned, deduped and blank-stripped', async () => {
+  const hs = makeMultiRoomHomeserver({
+    syncs: [
+      { next_batch: 's0' },
+      multiRoomBatch('s1', {
+        [ROOM]: [msgEvent({ event_id: '$a', content: { msgtype: 'm.text', body: '!bot A' } })],
+        [ROOM_B]: [msgEvent({ event_id: '$b', content: { msgtype: 'm.text', body: '!bot B' } })]
+      })
+    ]
+  });
+  // ROOM appears in both spellings, plus a blank entry from an empty Settings line.
+  const { client, received, logs } = makeClient(hs, { roomId: ROOM, roomIds: [ROOM, ROOM_B, '  '] });
+
+  const res = await client.start();
+  assert.equal(res.ok, true, res.error);
+  await until(() => received.length >= 2);
+  client.stop();
+
+  const connected = logs.find((l) => l.includes('connected as'));
+  assert.ok(connected, 'logged a connection line');
+  assert.equal(
+    (connected.match(new RegExp(ROOM.replace(/[!$]/g, '\\$&'), 'g')) || []).length, 1,
+    'the duplicated room is listed exactly once'
+  );
+  assert.equal(received.length, 2);
+});
+
+test('no room filter at all still watches every joined room', async () => {
+  const hs = makeMultiRoomHomeserver({
+    syncs: [
+      { next_batch: 's0' },
+      multiRoomBatch('s1', {
+        [ROOM_C]: [msgEvent({ event_id: '$c', content: { msgtype: 'm.text', body: '!bot anywhere' } })]
+      })
+    ]
+  });
+  const { client, received } = makeClient(hs, { roomIds: [] });
+
+  const res = await client.start();
+  assert.equal(res.ok, true, res.error);
+  await until(() => received.length >= 1);
+  client.stop();
+
+  assert.equal(received[0].roomId, ROOM_C, 'an empty list means unfiltered, matching the config default');
+});
