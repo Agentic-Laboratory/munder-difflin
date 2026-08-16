@@ -18,6 +18,7 @@ import { DEFAULT_CONTEXT_TRIGGER, type ContextRule } from '../../../shared/trigg
 import type { AgentProvider } from '../../../shared/agentProvider';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
 import { deliverWithAcknowledgement } from './queueDelivery';
+import { INBOX_NUDGE_TEXT, nudgeDecision, type NudgeState } from './inboxNudge';
 import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 
 const GOD_ID = 'god';
@@ -253,10 +254,12 @@ function passesContextPressure(a: Agent, rule: ContextRule): boolean {
  *      doesn't stall while an agent sits at its prompt.
  */
 export function useHive(config: HarnessConfig | null): void {
-  // Per-agent dedup key for the inbox-wake nudge: the newest inbox message id we
-  // last nudged about. Keyed by id (not count) so an oscillating count after a
-  // drain doesn't re-nudge for the same message set.
-  const nudged = useRef<Record<string, string>>({});
+  // Per-agent inbox-wake bookkeeping: which inbox ids this agent has been nudged
+  // about, and how much of the retry budget that mail has spent. Tracking the id
+  // SET (not a "newest" maximum) is what stops an oscillating count re-nudging for
+  // the same mail, and what stops a hand-authored id that string-sorts low from
+  // being invisible. See inboxNudge.ts for both faults in full.
+  const nudged = useRef<Record<string, NudgeState | undefined>>({});
   // Per-agent timestamp of the last queued-message we submitted. Guards against
   // re-sending the next message before the agent's hooks have flipped it to
   // 'working' (there's a short window where it still reads 'idle' right after we
@@ -603,20 +606,13 @@ export function useHive(config: HarnessConfig | null): void {
       for (const a of agents) {
         try {
           const inbox = await window.cth.hiveInbox(a.id);
-          // Dedup by the newest message id, not the count — a count can oscillate
-          // as messages drain and re-arrive, which would re-nudge for the same set.
-          const newest = inbox.length
-            ? inbox.map((m) => m.id).sort().slice(-1)[0]
-            : '';
-          if (newest && nudged.current[a.id] !== newest) {
-            useStore.getState().enqueueMessage(
-              a.id,
-              'You have new hive inbox message(s) — read your inbox, act on them now, and move handled ones to inbox/.done/. Act autonomously; only message god if you genuinely need a decision.'
-            );
-            nudged.current[a.id] = newest;
-          } else if (!newest) {
-            nudged.current[a.id] = '';
-          }
+          // A nudge of ours still queued means the agent is mid-turn, not starved:
+          // don't stack a second copy and don't spend a retry waiting for it.
+          const pending = (useStore.getState().messageQueues[a.id] ?? [])
+            .some((q) => q.text === INBOX_NUDGE_TEXT);
+          const d = nudgeDecision(nudged.current[a.id], inbox, Date.now(), pending);
+          nudged.current[a.id] = d.state;
+          if (d.nudge) useStore.getState().enqueueMessage(a.id, INBOX_NUDGE_TEXT);
         } catch { /* ignore */ }
       }
     }, 4000);
