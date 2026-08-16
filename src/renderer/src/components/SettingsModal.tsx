@@ -575,6 +575,28 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       // drift apart.
       const homeserverUrl = matrixHomeserverUrl.trim();
       const roomIds = matrixRoomIdsText.split('\n').map((s) => s.trim()).filter(Boolean);
+
+      // ORDER IS LOAD-BEARING: the token must be stored BEFORE the config write.
+      // `config:update` reconciles the /sync listener SYNCHRONOUSLY when the patch
+      // carries a matrix key (src/main/index.ts:3179), and `startMatrixClient`
+      // reads `matrixOutboundCredentials()` before its first await (index.ts:1788)
+      // — so saving config first makes that reconcile read a token that is still
+      // seconds away from existing. It bails out, and the bot neither listens nor
+      // replies until a second save. Nothing else reconciles: upsert and setSecret
+      // do not, so the stale listener would simply persist.
+      //
+      // Turning the block OFF skips the record write entirely: writing it would
+      // either disable an integration the user configured under the Integrations
+      // tab, or claim enabled:true while they just switched Matrix off.
+      let note = 'saved';
+      if (enabled) {
+        // Caught HERE rather than by the outer handler: a registry that is down,
+        // or a token the gate rejects, must not cost the user their homeserver,
+        // bot id and room list. The config write below is unconditional.
+        try { note = await syncMatrixIntegration(homeserverUrl); }
+        catch (e) { note = e instanceof Error ? e.message : String(e); }
+      }
+
       await window.cth.updateConfig({
         matrixEnabled: enabled,
         matrixHomeserverUrl: homeserverUrl,
@@ -582,10 +604,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
         matrixRoomIds: roomIds
       } as Partial<HarnessConfig>);
       setMatrixEnabled(enabled);
-      // Turning the block OFF persists config only: writing the record here
-      // would either disable an integration the user configured under the
-      // Integrations tab, or claim enabled:true while they just switched off.
-      setMatrixNote(enabled ? await syncMatrixIntegration(homeserverUrl) : 'saved');
+      setMatrixNote(note);
     } catch (e) {
       setMatrixNote(e instanceof Error ? e.message : String(e));
     } finally { setMatrixBusy(false); }
@@ -605,9 +624,17 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
    *
    * Runs on EVERY save, not just token saves: the record's baseUrl has to follow
    * an edited Homeserver URL or the broker keeps posting at the old origin.
+   *
+   * Called BEFORE the config write — see the ordering note in saveMatrix. Takes
+   * the homeserver as an argument precisely so it does not depend on config
+   * having been persisted first.
    */
   const syncMatrixIntegration = async (homeserverUrl: string): Promise<string> => {
     const token = matrixToken.trim();
+    // Re-mask on every save ATTEMPT, not just success: a failed save leaves an
+    // error note on screen, and a revealed credential has no business sitting
+    // there next to it. The buffer itself is kept for a retry.
+    if (token) setShowMatrixToken(false);
     if (!homeserverUrl) {
       // '' fails the shared baseUrl check, so the record cannot be written. Say
       // so rather than reporting a token save that did not happen.
@@ -627,7 +654,6 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     if (!res.ok) return res.error || 'could not store the access token';
     if (!token) return 'saved';
     setMatrixToken(''); // write-only: the buffer is cleared, never re-read
-    setShowMatrixToken(false); // re-mask, so the NEXT token isn't typed in the clear
     setMatrixTokenStored(true);
     return 'saved — access token stored';
   };
