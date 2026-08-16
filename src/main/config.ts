@@ -323,6 +323,24 @@ export interface HarnessConfig {
    *  thread) or an agent's own direct in-thread reply — those always stay on. */
   slackProactivePosting?: boolean;
 
+  // ─── Matrix (self-hosted peer transport, additive alongside Slack) ─────────
+  /** Master toggle for the Matrix → Michael's-queue integration. Mirrors
+   *  `slackEnabled`'s role. */
+  matrixEnabled?: boolean;
+  /** Self-hosted homeserver client-server API origin, e.g.
+   *  "https://matrix.example.com". User-supplied — this is SELF-HOSTED, so
+   *  there is no hardcoded matrix.org default. The bot's access token is NOT
+   *  stored here: register a "Matrix" integration (src/shared/integrations.ts)
+   *  so it lives behind the encrypted secret store / loopback broker. */
+  matrixHomeserverUrl?: string;
+  /** The bot's own Matrix user id (e.g. "@bot:example.com"). Needed to filter
+   *  the bot's own echoed events out of /sync (Matrix has no built-in echo
+   *  suppression the way Slack's Socket Mode does). */
+  matrixUserId?: string;
+  /** Room ids ("!abc:example.com") or aliases ("#room:example.com") to listen
+   *  on. Empty = none configured yet. */
+  matrixRoomIds?: string[];
+
   // ─── Free Flow (voice dictation → message queue) ───────────────────────────
   /** Master toggle for Free Flow push-to-talk dictation. Default OFF: with it off
    *  the composer shows no mic button, no getUserMedia runs, and no Groq call is
@@ -436,6 +454,10 @@ const DEFAULTS: HarnessConfig = {
   slackChannelId: undefined,
   slackPort: undefined,
   slackProactivePosting: false,
+  matrixEnabled: false,
+  matrixHomeserverUrl: undefined,
+  matrixUserId: undefined,
+  matrixRoomIds: [],
   freeflowEnabled: true,
   groqApiKey: undefined,
   freeflowModel: 'whisper-large-v3-turbo',

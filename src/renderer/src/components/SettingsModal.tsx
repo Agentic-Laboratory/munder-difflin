@@ -294,6 +294,17 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   // Whether the connect-steps help panel is expanded.
   const [showSlackHelp, setShowSlackHelp] = useState(false);
 
+  // --- Matrix integration (self-hosted peer transport, additive alongside Slack) ---
+  // No start/stop lifecycle here (unlike Slack): the /sync listener lives in
+  // src/main/matrix.ts / matrix-trigger.cjs, owned by a different lane. This
+  // block only persists the config keys those files read.
+  const [matrixEnabled, setMatrixEnabled] = useState(config.matrixEnabled ?? false);
+  const [matrixHomeserverUrl, setMatrixHomeserverUrl] = useState(config.matrixHomeserverUrl ?? '');
+  const [matrixUserId, setMatrixUserId] = useState(config.matrixUserId ?? '');
+  const [matrixRoomIdsText, setMatrixRoomIdsText] = useState((config.matrixRoomIds ?? []).join('\n'));
+  const [matrixBusy, setMatrixBusy] = useState(false);
+  const [matrixNote, setMatrixNote] = useState('');
+
   // --- Webhook triggers (a LIST; src/shared/triggers.ts owns the type) ---------
   // The list itself lives in the store, not in local state: the Triggers tab
   // edits the same webhooks, and one of the two surfaces holding a private copy
@@ -445,6 +456,10 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       setSlackChannel(cc.slackChannelId ?? '');
       setSlackPort(String(cc.slackPort ?? 3847));
       setSlackProactivePosting(cc.slackProactivePosting ?? false);
+      setMatrixEnabled(cc.matrixEnabled ?? false);
+      setMatrixHomeserverUrl(cc.matrixHomeserverUrl ?? '');
+      setMatrixUserId(cc.matrixUserId ?? '');
+      setMatrixRoomIdsText((cc.matrixRoomIds ?? []).join('\n'));
       const kgOn = (cc as { knowledgeGraph?: { enabled?: boolean } }).knowledgeGraph?.enabled === true;
       setKgEnabled(kgOn);
       setFreeflowEnabled(cc.freeflowEnabled !== false);
@@ -530,6 +545,27 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     try { await window.cth.slackStop(); setRunning(false); setSlackNote('stopped'); }
     catch (e) { setSlackNote(e instanceof Error ? e.message : String(e)); }
     finally { setSlackBusy(false); }
+  };
+
+  /** Persist the Matrix config keys via the generic config:update IPC — there is
+   *  no bespoke matrixSetConfig/start/stop (unlike Slack): the /sync listener
+   *  and its lifecycle belong to a different lane's files. Room ids/aliases are
+   *  entered one per line and split here. */
+  const saveMatrix = async (enabled: boolean) => {
+    setMatrixBusy(true); setMatrixNote('');
+    try {
+      const roomIds = matrixRoomIdsText.split('\n').map((s) => s.trim()).filter(Boolean);
+      await window.cth.updateConfig({
+        matrixEnabled: enabled,
+        matrixHomeserverUrl: matrixHomeserverUrl.trim(),
+        matrixUserId: matrixUserId.trim(),
+        matrixRoomIds: roomIds
+      } as Partial<HarnessConfig>);
+      setMatrixEnabled(enabled);
+      setMatrixNote('saved');
+    } catch (e) {
+      setMatrixNote(e instanceof Error ? e.message : String(e));
+    } finally { setMatrixBusy(false); }
   };
 
   // --- Webhook trigger handlers ---
@@ -1453,6 +1489,97 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                               <code>message.channels</code> / <code>message.groups</code> bot event, set the
                               Request URL above, and reinstall to your workspace. The tunnel URL changes on every
                               restart, so re-paste it after pressing Start again.
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ height: 2, background: 'var(--cth-ink-300)' }} />
+
+                      {/* Matrix integration — self-hosted peer transport, additive
+                          alongside Slack. No Start/Stop lifecycle here (unlike
+                          Slack): this block only persists the homeserver/room/user
+                          config keys that the /sync listener (owned elsewhere)
+                          reads. The bot's access token is registered separately,
+                          above, via the generic IntegrationsRegistry ("Matrix"
+                          template) so it stays behind the encrypted secret store. */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div style={{
+                          fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
+                          color: 'var(--cth-ink-500)', textTransform: 'uppercase', marginBottom: 2
+                        }}>
+                          Matrix
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
+                              Matrix integration
+                            </span>
+                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                              Self-hosted homeserver rooms, piped into Michael's queue like Slack.
+                            </span>
+                          </div>
+                          <PixelButton
+                            variant={matrixEnabled ? 'primary' : 'secondary'}
+                            size="sm"
+                            disabled={matrixBusy}
+                            onClick={() => { void saveMatrix(!matrixEnabled); }}
+                          >
+                            {matrixEnabled ? 'on' : 'off'}
+                          </PixelButton>
+                        </div>
+
+                        {matrixEnabled && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Homeserver URL</span>
+                              <input
+                                value={matrixHomeserverUrl}
+                                onChange={(e) => setMatrixHomeserverUrl(e.target.value)}
+                                placeholder="https://matrix.your-domain.tld"
+                                style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                              />
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                Your own homeserver's client-server origin — never matrix.org.
+                              </span>
+                            </label>
+
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Bot user id</span>
+                              <input
+                                value={matrixUserId}
+                                onChange={(e) => setMatrixUserId(e.target.value)}
+                                placeholder="@bot:your-domain.tld"
+                                style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                              />
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                Used to filter the bot's own events out of its own room sync.
+                              </span>
+                            </label>
+
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Room ids / aliases (one per line)</span>
+                              <textarea
+                                value={matrixRoomIdsText}
+                                onChange={(e) => setMatrixRoomIdsText(e.target.value)}
+                                placeholder={'!abc123:your-domain.tld\n#general:your-domain.tld'}
+                                rows={3}
+                                style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)', resize: 'vertical' }}
+                              />
+                            </label>
+
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <PixelButton variant="primary" size="sm" onClick={() => saveMatrix(matrixEnabled)} disabled={matrixBusy}>
+                                {matrixBusy ? '...' : 'save'}
+                              </PixelButton>
+                              {matrixNote && (
+                                <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{matrixNote}</span>
+                              )}
+                            </div>
+
+                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                              Register the bot's access token above under Integrations (template "Matrix") — it's
+                              stored encrypted and reachable only through the loopback broker, never here.
                             </span>
                           </div>
                         )}
