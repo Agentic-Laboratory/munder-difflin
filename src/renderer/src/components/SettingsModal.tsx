@@ -306,6 +306,10 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const [matrixRoomIdsText, setMatrixRoomIdsText] = useState((config.matrixRoomIds ?? []).join('\n'));
   const [matrixBusy, setMatrixBusy] = useState(false);
   const [matrixNote, setMatrixNote] = useState('');
+  // Smoke test: separate busy/note pair so a test result doesn't overwrite the
+  // save confirmation the user just read (and vice versa).
+  const [matrixTestBusy, setMatrixTestBusy] = useState(false);
+  const [matrixTestLines, setMatrixTestLines] = useState<Array<{ ok: boolean; text: string }>>([]);
   // The bot's OUTBOUND access token. WRITE-ONLY, exactly like the Integrations
   // tab: this buffer travels one way into the encrypted store and is cleared on
   // success — `integrationsList` redacts the stored value to a boolean, so there
@@ -608,6 +612,44 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     } catch (e) {
       setMatrixNote(e instanceof Error ? e.message : String(e));
     } finally { setMatrixBusy(false); }
+  };
+
+  /**
+   * Post a real message to every configured room, end to end.
+   *
+   * Saves first: the test reads config in the main process, so testing unsaved
+   * edits would silently test the OLD values and report a green that means
+   * nothing. Main also rewrites room names/aliases to real ids as part of the
+   * test — `roomIdsRewritten` is the signal to pull those back into the textarea
+   * so the field shows what the listener is actually filtering on.
+   */
+  const sendMatrixTest = async (): Promise<void> => {
+    setMatrixTestBusy(true);
+    setMatrixTestLines([]);
+    try {
+      await saveMatrix(matrixEnabled);
+      const res = await window.cth.matrixSendTest({});
+      const lines: Array<{ ok: boolean; text: string }> = [];
+      if (res.userId) lines.push({ ok: true, text: `token verified — the bot is ${res.userId}` });
+      if (res.error) lines.push({ ok: false, text: res.error });
+      for (const r of res.results ?? []) {
+        if (r.ok) {
+          const how = r.via === 'name' ? ` (matched by name → ${r.roomId})`
+            : r.via === 'alias' ? ` (alias → ${r.roomId})` : '';
+          lines.push({ ok: true, text: `sent to ${r.input}${how}` });
+        } else {
+          lines.push({ ok: false, text: `${r.input}: ${r.error ?? 'send failed'}` });
+        }
+      }
+      if (res.roomIdsRewritten) {
+        const cfg = await window.cth.getConfig();
+        setMatrixRoomIdsText((cfg.matrixRoomIds ?? []).join('\n'));
+        lines.push({ ok: true, text: 'room ids rewritten to their real ids so the listener can match them' });
+      }
+      setMatrixTestLines(lines);
+    } catch (e) {
+      setMatrixTestLines([{ ok: false, text: e instanceof Error ? e.message : String(e) }]);
+    } finally { setMatrixTestBusy(false); }
   };
 
   /**
@@ -1656,6 +1698,17 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                 rows={3}
                                 style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)', resize: 'vertical' }}
                               />
+                              {/* The room filter is an exact-match set against
+                                  /sync keys, which are always `!id:server`. A
+                                  bare display name used to match nothing at all,
+                                  with no error anywhere — so say what the field
+                                  takes, and what happens to a name. */}
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                An id (<code>!abc123:your-domain.tld</code>) or an alias
+                                (<code>#general:your-domain.tld</code>). A plain room name like{' '}
+                                <code>Agent Chat</code> also works — "send test message" resolves it to the real id
+                                and rewrites it here.
+                              </span>
                             </label>
 
                             {/* The bot's OUTBOUND access token. Same write-only
@@ -1702,6 +1755,39 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                 <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{matrixNote}</span>
                               )}
                             </div>
+
+                            {/* The only proof that the whole outbound chain works:
+                                token → account → room membership → a real event in
+                                a real room. Saves first, because main tests what is
+                                on disk, not what is in these inputs. */}
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <PixelButton
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => { void sendMatrixTest(); }}
+                                disabled={matrixTestBusy || matrixBusy}
+                              >
+                                {matrixTestBusy ? 'sending...' : 'send test message'}
+                              </PixelButton>
+                              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
+                                Saves, verifies the token's account, then posts to every room above.
+                              </span>
+                            </div>
+                            {matrixTestLines.length > 0 && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                {matrixTestLines.map((l, i) => (
+                                  <span
+                                    key={i}
+                                    style={{
+                                      fontSize: 12, lineHeight: '16px',
+                                      color: l.ok ? 'var(--cth-ink-500)' : 'var(--cth-danger, #b3261e)'
+                                    }}
+                                  >
+                                    {l.ok ? '✓' : '✗'} {l.text}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
 
                             <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
                               Saving registers the homeserver and token as the "Matrix" integration, so the bot can post

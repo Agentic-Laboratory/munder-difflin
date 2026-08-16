@@ -28,7 +28,10 @@ const loadTs = require('./load-ts.cjs');
 const {
   MatrixClient,
   sendMatrixMessage,
-  createMemorySyncTokenStore
+  createMemorySyncTokenStore,
+  matrixWhoami,
+  listJoinedRooms,
+  resolveMatrixRooms
 } = loadTs('src/main/matrix.ts');
 
 const HS = 'https://matrix.example.org';
@@ -702,4 +705,136 @@ test('no room filter at all still watches every joined room', async () => {
   client.stop();
 
   assert.equal(received[0].roomId, ROOM_C, 'an empty list means unfiltered, matching the config default');
+});
+
+// ── preflight: whoami + room resolution ─────────────────────────────────────
+//
+// These cover the two strings in Settings that nothing else validates: the
+// account a token really belongs to, and a room "id" that is actually a display
+// name. Both fail SILENTLY in production — a wrong-account token breaks echo
+// suppression open, and a display name matches no /sync key — so the assertions
+// here are about producing an ERROR where there used to be nothing.
+
+/** Fake homeserver covering only the preflight endpoints. */
+function preflightFetch(opts) {
+  const { userId = BOT, joined = [], names = {}, aliases = {}, status = {} } = opts || {};
+  return async (url) => {
+    const path = url.replace(HS, '');
+    if (path.startsWith('/_matrix/client/v3/account/whoami')) {
+      if (status.whoami) return jsonRes(status.whoami, { errcode: 'M_UNKNOWN_TOKEN', error: 'bad token' });
+      return jsonRes(200, { user_id: userId });
+    }
+    if (path.startsWith('/_matrix/client/v3/joined_rooms')) return jsonRes(200, { joined_rooms: joined });
+    const nameMatch = path.match(/^\/_matrix\/client\/v3\/rooms\/([^/]+)\/state\/m\.room\.name$/);
+    if (nameMatch) {
+      const id = decodeURIComponent(nameMatch[1]);
+      return id in names ? jsonRes(200, { name: names[id] }) : jsonRes(404, { errcode: 'M_NOT_FOUND' });
+    }
+    const aliasMatch = path.match(/^\/_matrix\/client\/v3\/directory\/room\/([^/]+)$/);
+    if (aliasMatch) {
+      const alias = decodeURIComponent(aliasMatch[1]);
+      return alias in aliases ? jsonRes(200, { room_id: aliases[alias] }) : jsonRes(404, { errcode: 'M_NOT_FOUND' });
+    }
+    return jsonRes(404, { errcode: 'M_UNRECOGNIZED' });
+  };
+}
+
+const ctx = (fetchImpl) => ({ homeserverUrl: HS, accessToken: TOKEN, fetchImpl });
+
+test('whoami reports the account the token actually belongs to', async () => {
+  const r = await matrixWhoami(ctx(preflightFetch({ userId: '@someone-else:example.org' })));
+  assert.equal(r.ok, true);
+  assert.equal(r.userId, '@someone-else:example.org',
+    'the caller compares this against config.matrixUserId — a mismatch must be visible, not assumed away');
+});
+
+test('whoami surfaces a rejected token instead of reporting success', async () => {
+  const r = await matrixWhoami(ctx(preflightFetch({ status: { whoami: 401 } })));
+  assert.equal(r.ok, false);
+  assert.match(r.error, /401|M_UNKNOWN_TOKEN/i);
+});
+
+test('whoami never leaks the access token into its error text', async () => {
+  const r = await matrixWhoami(ctx(preflightFetch({ status: { whoami: 401 } })));
+  assert.equal(r.ok, false);
+  assert.equal(r.error.includes(TOKEN), false);
+});
+
+test('joined rooms carry their display names, and unnamed rooms stay null', async () => {
+  const f = preflightFetch({ joined: [ROOM, '!other:example.org'], names: { [ROOM]: 'Agent Chat' } });
+  const r = await listJoinedRooms(ctx(f));
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.rooms, [
+    { roomId: ROOM, name: 'Agent Chat' },
+    { roomId: '!other:example.org', name: null }
+  ]);
+});
+
+test('a display name resolves to the real room id', async () => {
+  const f = preflightFetch({ joined: [ROOM], names: { [ROOM]: 'Agent Chat' } });
+  const r = await resolveMatrixRooms(ctx(f), ['Agent Chat']);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.resolutions, [{ input: 'Agent Chat', roomId: ROOM, via: 'name', error: null }]);
+});
+
+test('display-name matching ignores case and surrounding whitespace', async () => {
+  const f = preflightFetch({ joined: [ROOM], names: { [ROOM]: 'Agent Chat' } });
+  const r = await resolveMatrixRooms(ctx(f), ['  agent chat  ']);
+  assert.equal(r.ok, true);
+  assert.equal(r.resolutions[0].roomId, ROOM);
+});
+
+test('an unmatched name errors and lists what the bot HAS joined', async () => {
+  const f = preflightFetch({ joined: [ROOM], names: { [ROOM]: 'Agent Chat' } });
+  const r = await resolveMatrixRooms(ctx(f), ['Typo Chat']);
+  assert.equal(r.ok, true);
+  assert.equal(r.resolutions[0].roomId, null);
+  assert.match(r.resolutions[0].error, /Agent Chat/,
+    'the fix is in the error: show the rooms that exist rather than a bare not-found');
+});
+
+test('an ambiguous name refuses rather than picking a room', async () => {
+  const f = preflightFetch({
+    joined: [ROOM, '!two:example.org'],
+    names: { [ROOM]: 'Agent Chat', '!two:example.org': 'Agent Chat' }
+  });
+  const r = await resolveMatrixRooms(ctx(f), ['Agent Chat']);
+  assert.equal(r.resolutions[0].roomId, null, 'guessing would post to the wrong room and look like it worked');
+  assert.match(r.resolutions[0].error, /matches 2/);
+});
+
+test('an alias resolves through the directory', async () => {
+  const f = preflightFetch({ joined: [ROOM], aliases: { '#general:example.org': ROOM } });
+  const r = await resolveMatrixRooms(ctx(f), ['#general:example.org']);
+  assert.deepEqual(r.resolutions, [{ input: '#general:example.org', roomId: ROOM, via: 'alias', error: null }]);
+});
+
+test('a room id the bot has not joined is an error, not a send that 403s later', async () => {
+  const f = preflightFetch({ joined: [] });
+  const r = await resolveMatrixRooms(ctx(f), [ROOM]);
+  assert.equal(r.resolutions[0].roomId, null);
+  assert.match(r.resolutions[0].error, /not joined/i);
+});
+
+test('an alias pointing at a room the bot never joined is caught too', async () => {
+  const f = preflightFetch({ joined: [], aliases: { '#general:example.org': ROOM } });
+  const r = await resolveMatrixRooms(ctx(f), ['#general:example.org']);
+  assert.equal(r.resolutions[0].roomId, null);
+  assert.match(r.resolutions[0].error, /not joined/i);
+});
+
+test('mixed entries each resolve independently and blanks are dropped', async () => {
+  const f = preflightFetch({
+    joined: [ROOM, '!two:example.org'],
+    names: { [ROOM]: 'Agent Chat' },
+    aliases: { '#general:example.org': '!two:example.org' }
+  });
+  const r = await resolveMatrixRooms(ctx(f), ['Agent Chat', '', '  ', '#general:example.org', '!ghost:example.org']);
+  assert.equal(r.resolutions.length, 3, 'blank lines are not rooms and must not become failures');
+  assert.deepEqual(r.resolutions.map((x) => x.roomId), [ROOM, '!two:example.org', null]);
+});
+
+test('a failed joined_rooms call fails the whole resolution instead of reporting no rooms', async () => {
+  const r = await resolveMatrixRooms(ctx(async () => jsonRes(500, { errcode: 'M_UNKNOWN' })), ['Agent Chat']);
+  assert.equal(r.ok, false, 'an empty room list from a broken call would read as "no such room" and mislead');
 });

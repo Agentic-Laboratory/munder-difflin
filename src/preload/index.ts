@@ -288,6 +288,14 @@ export interface HarnessConfig {
   slackChannelId?: string;
   slackPort?: number;
   slackProactivePosting?: boolean;
+  // Matrix. Mirrors src/main/config.ts — the access token is deliberately absent:
+  // it lives in the encrypted integration store, never in config.json.
+  matrixEnabled?: boolean;
+  matrixHomeserverUrl?: string;
+  matrixUserId?: string;
+  /** Resolved `!id:server` room ids. `matrix:sendTest` rewrites names/aliases
+   *  into this shape, because the /sync filter matches ids and nothing else. */
+  matrixRoomIds?: string[];
   webhookEnabled?: boolean;
   webhookSecret?: string;
   webhookPort?: number;
@@ -1043,6 +1051,18 @@ const api = {
    *  reconciled from config:update, not driven by a bespoke button pair. */
   matrixStatus: (): Promise<{ running: boolean; healthy: boolean; userId: string | null; encryptedRooms: string[]; messagesEmitted: number; lastError: string | null; fatalError: string | null } | null> =>
     ipcRenderer.invoke('matrix:status'),
+
+  /** Smoke-test the outbound path: verify the stored token's account, resolve the
+   *  configured rooms to real ids (rewriting config when they were names/aliases),
+   *  and post one message per room. The token stays in main — this returns ids
+   *  and errors only. `roomIdsRewritten` means Settings should re-read config. */
+  matrixSendTest: (req?: { text?: string }): Promise<{
+    ok: boolean;
+    userId?: string;
+    error?: string;
+    roomIdsRewritten?: boolean;
+    results: Array<{ input: string; roomId: string | null; via: string | null; ok: boolean; eventId?: string; error: string | null }>;
+  }> => ipcRenderer.invoke('matrix:sendTest', req ?? {}),
 
   // ─── Slack integration (Slack message → Michael's queue) ─────────────────────
   /** Register a listener for inbound Slack messages; returns an unsubscribe fn.

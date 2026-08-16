@@ -33,7 +33,10 @@ import { PersistStore } from './db';
 import { readAgentUsage, readContextTokens, seedSessionTranscript, resolveSessionCwd } from './transcript';
 import { listIssues, listCIRuns } from './github';
 import { SlackWebhookServer, SlackReplyServer, postSlackReply, type SlackEventFile } from './slack';
-import { MatrixClient, sendMatrixMessage, createFileSyncTokenStore } from './matrix';
+import {
+  MatrixClient, sendMatrixMessage, createFileSyncTokenStore,
+  matrixWhoami, resolveMatrixRooms
+} from './matrix';
 import {
   WebhookServer,
   type WebhookDispatch, type WebhookEndpointRef, type WebhookInbound, type WebhookTaskStatus
@@ -3853,6 +3856,95 @@ ipcMain.handle('matrix:status', () => {
     encryptedRooms: s.encryptedRooms, messagesEmitted: s.messagesEmitted,
     lastError: s.lastError, fatalError: s.fatalError
   };
+});
+
+/**
+ * Smoke-test the whole outbound path from Settings → Matrix: prove the token,
+ * prove the account, resolve the rooms, post a real message, and leave the
+ * config in a state the INBOUND listener can also use.
+ *
+ * The token never crosses IPC — it is decrypted here for the duration of the
+ * call, exactly like a worker reply. The renderer gets back ids and errors only.
+ */
+ipcMain.handle('matrix:sendTest', async (_evt, payload: unknown) => {
+  const asked = (payload as { text?: unknown })?.text;
+  const text =
+    typeof asked === 'string' && asked.trim()
+      ? asked.trim()
+      : 'Test message from the Munder Difflin harness — the Matrix bot is wired up. Reply to this message to check the inbound path.';
+
+  const creds = matrixOutboundCredentials();
+  if (!creds) {
+    return {
+      ok: false,
+      error: 'no Matrix access token is stored — enter the token in Settings → Matrix and save first',
+      results: []
+    };
+  }
+  const cfg = readConfig();
+
+  // 1. IDENTITY BEFORE ANYTHING IS SENT. A token for a different account than
+  //    `matrixUserId` breaks echo suppression open (matrix-trigger.cjs note 4)
+  //    and the bot replies to itself forever on the user's homeserver. That is
+  //    outward-facing and unattended, so it is a refusal, not a warning.
+  const who = await matrixWhoami(creds);
+  if (!who.ok) return { ok: false, error: `the stored access token was rejected: ${who.error}`, results: [] };
+  const configuredUser = cfg.matrixUserId?.trim();
+  if (configuredUser && configuredUser !== who.userId) {
+    return {
+      ok: false,
+      userId: who.userId,
+      error:
+        `the stored token belongs to ${who.userId}, but Settings says ${configuredUser}. ` +
+        'Nothing was sent — a mismatch makes the bot answer its own messages. Fix one of the two and test again.',
+      results: []
+    };
+  }
+
+  // 2. Resolve whatever was typed into ids the /sync filter can match.
+  const entries = Array.isArray(cfg.matrixRoomIds) ? cfg.matrixRoomIds : [];
+  if (entries.filter((e) => typeof e === 'string' && e.trim()).length === 0) {
+    return { ok: false, userId: who.userId, error: 'no rooms are configured in Settings → Matrix', results: [] };
+  }
+  const resolved = await resolveMatrixRooms(creds, entries);
+  if (!resolved.ok) return { ok: false, userId: who.userId, error: resolved.error, results: [] };
+
+  // 3. WRITE THE RESOLVED IDS BACK. Resolving only inside this handler would fix
+  //    the send and leave the listener deaf: the room filter is an exact-match
+  //    Set built from these raw config strings, so a display name that posts
+  //    fine still matches no /sync key and the reply never arrives. `matrixRoomIds`
+  //    is in the `touchesMatrix` key list above, so this reconciles the listener.
+  const rewritten = resolved.resolutions.map((r) => r.roomId ?? r.input);
+  const roomIdsRewritten = JSON.stringify(rewritten) !== JSON.stringify(entries);
+  if (roomIdsRewritten) {
+    writeConfig({ matrixRoomIds: rewritten });
+    reconcileMatrixClient();
+  }
+
+  // 4. Send. One message per resolved room; an unresolved entry reports its own
+  //    reason rather than being skipped silently.
+  const results: Array<{
+    input: string; roomId: string | null; via: string | null;
+    ok: boolean; eventId?: string; error: string | null;
+  }> = [];
+  for (const r of resolved.resolutions) {
+    if (!r.roomId) {
+      results.push({ input: r.input, roomId: null, via: null, ok: false, error: r.error });
+      continue;
+    }
+    const sent = await sendMatrixMessage({
+      homeserverUrl: creds.homeserverUrl,
+      accessToken: creds.accessToken,
+      roomId: r.roomId,
+      text
+    });
+    results.push({
+      input: r.input, roomId: r.roomId, via: r.via,
+      ok: sent.ok, eventId: sent.eventId, error: sent.ok ? null : (sent.error ?? 'send failed')
+    });
+  }
+
+  return { ok: results.some((r) => r.ok), userId: who.userId, roomIdsRewritten, results };
 });
 
 // ─── IPC: Slack integration ─────────────────────────────────────────────────

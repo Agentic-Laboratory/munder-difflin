@@ -963,6 +963,199 @@ export async function sendMatrixMessage(opts: SendMatrixMessageOptions): Promise
 /** Alias so callers can import the name the wiring card expects. */
 export const sendMessage = sendMatrixMessage;
 
+// ── Preflight: identity + room resolution ───────────────────────────────────
+//
+// Everything below exists because Settings can only ever hold what a human
+// typed, and two of those strings are checked by nobody until the bot is live:
+//
+//   1. The access token is stored against a `matrixUserId` that nothing has
+//      verified it belongs to. `matrix-trigger.cjs` (note 4) suppresses echoes
+//      by comparing `sender === ownUserId`, so a token for a DIFFERENT account
+//      fails open: the bot answers its own messages forever, unattended.
+//   2. `matrixRoomIds` is used raw as an exact-match Set against the `/sync`
+//      room keys (see the MatrixClient constructor) — and `/sync` keys are
+//      always `!id:server`. A room's display name or alias silently matches
+//      nothing, and the bot is deaf with no error anywhere.
+//
+// So: resolve names/aliases to real ids, and prove membership while doing it —
+// a valid token on a room the bot never joined is a 403 at send time, which is
+// a much worse place to discover it.
+
+/** The three inputs every authenticated call here needs. */
+export interface MatrixApiContext {
+  homeserverUrl: string;
+  accessToken: string;
+  fetchImpl?: FetchLike;
+}
+
+type JsonResult = { ok: true; body: unknown } | { ok: false; error: string };
+
+/** Authenticated GET returning parsed JSON. The token goes in the header and is
+ *  never logged or echoed into an error — same discipline as sendMatrixMessage. */
+async function getJson(ctx: MatrixApiContext, path: string): Promise<JsonResult> {
+  const base = ctx.homeserverUrl.replace(/\/+$/, '');
+  if (!base) return { ok: false, error: 'missing homeserver url' };
+  if (!ctx.accessToken) return { ok: false, error: 'missing access token' };
+  const doFetch = ctx.fetchImpl ?? defaultFetch();
+  try {
+    const res = await doFetch(`${base}${path}`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${ctx.accessToken}`, accept: 'application/json' }
+    });
+    if (!res.ok) return { ok: false, error: await describeError(res) };
+    return { ok: true, body: await res.json() };
+  } catch (e) {
+    return { ok: false, error: errMsg(e) };
+  }
+}
+
+/**
+ * `GET /_matrix/client/v3/account/whoami` — the account the stored token really
+ * belongs to. This is the only way to tell a valid token for the wrong user
+ * from a valid token for the right one; both look identical at rest.
+ */
+export async function matrixWhoami(
+  ctx: MatrixApiContext
+): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
+  const r = await getJson(ctx, '/_matrix/client/v3/account/whoami');
+  if (!r.ok) return r;
+  const userId = (r.body as { user_id?: unknown })?.user_id;
+  if (typeof userId !== 'string' || !userId) return { ok: false, error: 'whoami returned no user_id' };
+  return { ok: true, userId };
+}
+
+export interface MatrixJoinedRoom {
+  roomId: string;
+  /** `m.room.name`, or null for an unnamed room. */
+  name: string | null;
+}
+
+/**
+ * The rooms the bot has actually JOINED, with their display names.
+ *
+ * Membership is half the value: `/joined_rooms` cannot list a room the bot was
+ * only invited to, so a hit here proves the send will not 403.
+ */
+export async function listJoinedRooms(
+  ctx: MatrixApiContext
+): Promise<{ ok: true; rooms: MatrixJoinedRoom[] } | { ok: false; error: string }> {
+  const r = await getJson(ctx, '/_matrix/client/v3/joined_rooms');
+  if (!r.ok) return r;
+  const ids = (r.body as { joined_rooms?: unknown })?.joined_rooms;
+  if (!Array.isArray(ids)) return { ok: false, error: 'joined_rooms returned no room list' };
+  const rooms: MatrixJoinedRoom[] = [];
+  for (const id of ids) {
+    if (typeof id !== 'string' || !id) continue;
+    // m.room.name is optional state: a 404 here means "unnamed", not "broken",
+    // so a failure downgrades the room to nameless instead of failing the call.
+    const nameRes = await getJson(ctx, `/_matrix/client/v3/rooms/${encodeURIComponent(id)}/state/m.room.name`);
+    const raw = nameRes.ok ? (nameRes.body as { name?: unknown })?.name : undefined;
+    rooms.push({ roomId: id, name: typeof raw === 'string' && raw.trim() ? raw : null });
+  }
+  return { ok: true, rooms };
+}
+
+export interface MatrixRoomResolution {
+  /** Exactly what Settings held, so the UI can name the field the user typed. */
+  input: string;
+  /** The `!id:server` the listener and the sender can both use, or null. */
+  roomId: string | null;
+  /** Which form the input turned out to be — for explaining the rewrite. */
+  via: 'id' | 'alias' | 'name' | null;
+  error: string | null;
+}
+
+/** Human-readable label for a joined room, for "did you mean" error text. */
+function roomLabel(r: MatrixJoinedRoom): string {
+  return r.name ? `${r.name} (${r.roomId})` : r.roomId;
+}
+
+/**
+ * Turn whatever Settings holds into room ids the `/sync` filter can match.
+ *
+ * Accepts all three forms a human plausibly types:
+ *   `!abc:server`  → verified against joined rooms
+ *   `#alias:server` → directory lookup, then verified against joined rooms
+ *   `Agent Chat`    → matched against joined rooms by display name
+ *
+ * An ambiguous name is an error, never a guess: picking one of two rooms named
+ * the same thing would post to the wrong one and look like it worked.
+ */
+export async function resolveMatrixRooms(
+  ctx: MatrixApiContext,
+  entries: readonly string[]
+): Promise<
+  { ok: true; joined: MatrixJoinedRoom[]; resolutions: MatrixRoomResolution[] } | { ok: false; error: string }
+> {
+  const joinedRes = await listJoinedRooms(ctx);
+  if (!joinedRes.ok) return joinedRes;
+  const joined = joinedRes.rooms;
+  const joinedIds = new Set(joined.map((r) => r.roomId));
+  const notJoined = (id: string) =>
+    `the bot has not joined ${id} — invite it to the room and accept the invite, then test again`;
+
+  const resolutions: MatrixRoomResolution[] = [];
+  for (const rawEntry of entries) {
+    const input = typeof rawEntry === 'string' ? rawEntry.trim() : '';
+    if (!input) continue;
+
+    if (input.startsWith('!')) {
+      resolutions.push(
+        joinedIds.has(input)
+          ? { input, roomId: input, via: 'id', error: null }
+          : { input, roomId: null, via: null, error: notJoined(input) }
+      );
+      continue;
+    }
+
+    if (input.startsWith('#')) {
+      const r = await getJson(ctx, `/_matrix/client/v3/directory/room/${encodeURIComponent(input)}`);
+      if (!r.ok) {
+        resolutions.push({ input, roomId: null, via: null, error: `no room found for alias ${input}: ${r.error}` });
+        continue;
+      }
+      const id = (r.body as { room_id?: unknown })?.room_id;
+      if (typeof id !== 'string' || !id) {
+        resolutions.push({ input, roomId: null, via: null, error: `alias ${input} resolved to no room id` });
+        continue;
+      }
+      resolutions.push(
+        joinedIds.has(id)
+          ? { input, roomId: id, via: 'alias', error: null }
+          : { input, roomId: null, via: null, error: notJoined(id) }
+      );
+      continue;
+    }
+
+    // Neither sigil → treat it as a display name. This is the case that used to
+    // fail silently, so the error carries the list of what IS joined.
+    const wanted = input.toLowerCase();
+    const matches = joined.filter((r) => (r.name ?? '').trim().toLowerCase() === wanted);
+    if (matches.length === 1) {
+      resolutions.push({ input, roomId: matches[0].roomId, via: 'name', error: null });
+    } else if (matches.length === 0) {
+      const listed = joined.length ? joined.map(roomLabel).join(', ') : 'no rooms at all';
+      resolutions.push({
+        input,
+        roomId: null,
+        via: null,
+        error: `no joined room is named "${input}" — the bot has joined: ${listed}`
+      });
+    } else {
+      resolutions.push({
+        input,
+        roomId: null,
+        via: null,
+        error: `"${input}" matches ${matches.length} joined rooms — use the room id instead: ${matches
+          .map((m) => m.roomId)
+          .join(', ')}`
+      });
+    }
+  }
+
+  return { ok: true, joined, resolutions };
+}
+
 // ── Wire shapes + helpers ───────────────────────────────────────────────────
 
 /** The subset of a Matrix event this module reads. */
