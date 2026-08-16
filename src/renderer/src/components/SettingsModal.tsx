@@ -317,6 +317,22 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const [matrixToken, setMatrixToken] = useState('');
   const [matrixTokenStored, setMatrixTokenStored] = useState(false);
   const [showMatrixToken, setShowMatrixToken] = useState(false);
+  // Health snapshot of the /sync listener. `matrix:status` and the preload
+  // bridge already existed — nothing in the renderer ever called them, so a
+  // listener that refuses to start (bad token, unjoined room, an encrypted
+  // room) was completely invisible: no error, no badge, nothing a user could
+  // reach. Polled (see the effect below) rather than fetched once, since the
+  // listener restart this triggers (config:update → reconcileMatrixClient) is
+  // fire-and-forget in main and its result lands a moment after this modal's
+  // own save/test calls resolve.
+  const [matrixHealth, setMatrixHealth] = useState<{
+    running: boolean; healthy: boolean; userId: string | null;
+    encryptedRooms: string[]; messagesEmitted: number;
+    lastError: string | null; fatalError: string | null;
+  } | null>(null);
+  // Distinct from matrixHealth === null ("no snapshot yet") — otherwise an IPC
+  // failure and "still checking" render as the same permanent "checking…".
+  const [matrixHealthError, setMatrixHealthError] = useState(false);
 
   // --- Webhook triggers (a LIST; src/shared/triggers.ts owns the type) ---------
   // The list itself lives in the store, not in local state: the Triggers tab
@@ -516,6 +532,23 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       } catch { /* status unavailable - assume not listening */ }
     })();
     return () => { alive = false; };
+  }, []);
+
+  // Poll the Matrix health snapshot while Settings is open. Polling (rather
+  // than a single fetch on mount) because reconcileMatrixClient() runs
+  // fire-and-forget in main — a save or "send test message" here returns
+  // before the listener has actually finished (re)starting, so a one-shot
+  // fetch would race it and show stale state.
+  useEffect(() => {
+    let alive = true;
+    const poll = () => {
+      void window.cth.matrixStatus()
+        .then((s) => { if (alive) { setMatrixHealth(s); setMatrixHealthError(false); } })
+        .catch(() => { if (alive) setMatrixHealthError(true); });
+    };
+    poll();
+    const timer = setInterval(poll, 5000);
+    return () => { alive = false; clearInterval(timer); };
   }, []);
 
   /** Persist the current Slack inputs. Returns the resolved config patch. */
@@ -1788,6 +1821,65 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                 ))}
                               </div>
                             )}
+
+                            {/* INBOUND health. "send test message" only proves outbound —
+                                a /sync listener that refuses to start (bad token, an
+                                unjoined room, an encrypted room) is otherwise invisible:
+                                no error, no badge, nothing a user could reach. This reads
+                                the same matrix:status the outbound test never touches. */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Inbound listener health</span>
+                              {matrixHealth === null ? (
+                                <span style={{
+                                  fontSize: 12, lineHeight: '16px',
+                                  color: matrixHealthError ? 'var(--cth-danger, #b3261e)' : 'var(--cth-ink-500)'
+                                }}>
+                                  {matrixHealthError ? 'could not reach the Matrix status check' : 'checking…'}
+                                </span>
+                              ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                  <span
+                                    style={{
+                                      fontSize: 12, lineHeight: '16px',
+                                      color: matrixHealth.healthy ? 'var(--cth-ink-500)' : 'var(--cth-danger, #b3261e)'
+                                    }}
+                                  >
+                                    {matrixHealth.healthy ? '✓' : '✗'}{' '}
+                                    {!matrixHealth.running
+                                      ? 'not running'
+                                      : matrixHealth.healthy
+                                        ? 'running — healthy'
+                                        : 'running, but unhealthy — see below'}
+                                  </span>
+                                  {matrixHealth.userId && (
+                                    <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                      bot: {matrixHealth.userId}
+                                    </span>
+                                  )}
+                                  <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                    messages received: {matrixHealth.messagesEmitted}
+                                  </span>
+                                  {matrixHealth.encryptedRooms.length > 0 && (
+                                    <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-danger, #b3261e)' }}>
+                                      {matrixHealth.encryptedRooms.length === 1 ? 'this room is' : 'these rooms are'}{' '}
+                                      end-to-end encrypted: {matrixHealth.encryptedRooms.join(', ')} — the bot cannot
+                                      read {matrixHealth.encryptedRooms.length === 1 ? 'it' : 'them'}; use an unencrypted
+                                      room instead.
+                                    </span>
+                                  )}
+                                  {matrixHealth.fatalError && (
+                                    <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-danger, #b3261e)' }}>
+                                      fatal: {matrixHealth.fatalError}
+                                    </span>
+                                  )}
+                                  {!matrixHealth.fatalError && matrixHealth.lastError && (
+                                    <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-danger, #b3261e)' }}>
+                                      last error: {matrixHealth.lastError}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
 
                             <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
                               Saving registers the homeserver and token as the "Matrix" integration, so the bot can post
