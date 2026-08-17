@@ -4,7 +4,7 @@
  * Lives under `<harnessHome>/hive/` as a single git repo that ONLY this main
  * process commits to (agents never call git — they just write files). See
  * HIVE.md for the full design. Responsibilities:
- *   - per-agent workspace (identity.md, memory.md, inbox/, outbox/, cursor.json)
+ *   - per-agent workspace (identity.md, memory.md, inbox/, outbox/)
  *   - a roster (registry.json), shared blackboard (board.md), task ledger,
  *     and an append-only event log (log.jsonl)
  *   - a router that drains each agent's outbox into recipients' inboxes
@@ -116,6 +116,13 @@ export interface HiveTask {
    *  done-summary reply is posted back into. Consumed OUTBOUND only; populating
    *  it is the inbound/kanban side's job and does not affect routing. */
   slack?: { channel: string; thread_ts: string };
+  /** Set when this task originated from a Matrix @-mention — the room and thread
+   *  root the done-summary reply is posted back into. The exact Matrix analogue
+   *  of `slack` above (roomId ≈ channel, threadRootId ≈ thread_ts): consumed
+   *  OUTBOUND only, and populating it never affects routing. Both fields can be
+   *  set on one card only if a message somehow arrived over both transports;
+   *  they are independent lanes with independent done-ledgers. */
+  matrix?: { roomId: string; threadRootId: string };
   /** Set when this task originated from a generic webhook POST. Stores the SHA-256
    *  of the capability token (never the raw token — that's returned to the caller
    *  once and never persisted), so a GET status lookup can match by hashing the
@@ -449,27 +456,43 @@ export class HiveManager {
 
   // — bootstrap —
 
-  /** Create the hive skeleton + git repo if missing. Idempotent. */
+  /** Create the hive skeleton + git repo if missing. Idempotent.
+   *
+   *  Runs on EVERY agent spawn (via ensureAgent), so "file missing" is not a
+   *  rare bootstrap-only signal — it can also mean a hive that has run for
+   *  days just had a live file vanish out from under it (D16: a stray
+   *  root-level move of tasks.json got swept into an unrelated routing
+   *  commit; the very next registration's ensureHive() saw the file gone and
+   *  silently reinitialized it to `{tasks:[]}`, discarding 27 real cards).
+   *  `isFreshHive` — decided up front, before any guard runs — is what lets
+   *  the guards tell "never existed" from "existed, then vanished": only on
+   *  a genuinely new hive (no `.git` yet) is a missing tracked file safe to
+   *  default. On an existing hive it goes through ensureTrackedFile, which
+   *  tries to recover the last-known-good content from git history first. */
   ensureHive(): void {
     const root = this.root();
     if (!root) return;
     mkdirSync(join(root, 'agents'), { recursive: true });
 
+    const isFreshHive = !existsSync(join(root, '.git'));
+
     const protocol = join(root, 'PROTOCOL.md');
     if (!existsSync(protocol)) writeFileSync(protocol, PROTOCOL_MD, 'utf8');
 
-    const registry = join(root, 'registry.json');
-    if (!existsSync(registry)) {
-      this.writeJson(registry, { godId: null, agents: {} } as Registry);
-    }
-    const board = join(root, 'board.md');
-    if (!existsSync(board)) {
-      writeFileSync(board, '# Hive board\n\n_Shared plans live here. The god agent is the scribe._\n', 'utf8');
-    }
-    const tasks = join(root, 'tasks.json');
-    if (!existsSync(tasks)) this.writeJson(tasks, { tasks: [] });
-    const log = join(root, 'log.jsonl');
-    if (!existsSync(log)) writeFileSync(log, '', 'utf8');
+    // log.jsonl MUST recover (or default) FIRST: every other branch below logs
+    // its own outcome via appendLog(), and appendLog uses appendFileSync — which
+    // creates log.jsonl on first write. If log.jsonl were also missing and this
+    // ran after registry/board/tasks, that incidental create would make its own
+    // ensureTrackedFile call below see the file already present and skip
+    // recovering its real history, silently losing the audit trail this whole
+    // fix exists to make loud.
+    this.ensureTrackedFile(root, 'log.jsonl', isFreshHive, '');
+    this.ensureTrackedFile(root, 'registry.json', isFreshHive,
+      JSON.stringify({ godId: null, agents: {} } as Registry, null, 2));
+    this.ensureTrackedFile(root, 'board.md', isFreshHive,
+      '# Hive board\n\n_Shared plans live here. The god agent is the scribe._\n');
+    this.ensureTrackedFile(root, 'tasks.json', isFreshHive,
+      JSON.stringify({ tasks: [] }, null, 2));
 
     // The Claude Code command reference Michael consults (refreshed each bootstrap
     // so it tracks the bundled list).
@@ -495,10 +518,49 @@ export class HiveManager {
     // …and the PATH-visible `node` fallback for the agent's OWN subprocesses.
     this.writeRuntimeShims();
 
-    if (!existsSync(join(root, '.git'))) {
+    if (isFreshHive) {
       this.git(['init', '-q'], root);
       this.commit('hive: init');
     }
+  }
+
+  /** Idempotent default-if-missing for a tracked hive state file, but only
+   *  blind-default on a genuinely fresh hive. On an existing hive (`.git`
+   *  already present) a missing file instead tries to recover the last
+   *  committed content first — see ensureHive's doc comment for why this
+   *  distinction is the actual fix, not the default-write itself. Logs either
+   *  outcome so a recovery (or a recovery failure) is never silent. */
+  private ensureTrackedFile(root: string, relPath: string, isFreshHive: boolean, defaultContent: string): void {
+    const p = join(root, relPath);
+    if (existsSync(p)) return;
+    if (!isFreshHive) {
+      const recovered = this.recoverFromGit(root, relPath);
+      if (recovered !== null) {
+        writeFileSync(p, recovered, 'utf8');
+        this.appendLog({ kind: 'recovered-missing-file', path: relPath });
+        return;
+      }
+      this.appendLog({ kind: 'missing-file-recovery-failed', path: relPath });
+    }
+    writeFileSync(p, defaultContent, 'utf8');
+  }
+
+  /** Last-known-good content for `relPath`, newest-first through the commits
+   *  that touched it. Tries each commit's OWN tree first, then that commit's
+   *  parent — covering the common case where the newest touching commit IS
+   *  the one that removed the file (its parent is the last commit that still
+   *  had it). Returns null if the path has no recoverable history. */
+  private recoverFromGit(root: string, relPath: string): string | null {
+    const log = this.git(['log', '--format=%H', '--', relPath], root);
+    if (!log.ok) return null;
+    const hashes = log.out.split('\n').map((s) => s.trim()).filter(Boolean);
+    for (const hash of hashes) {
+      const atCommit = this.git(['show', `${hash}:${relPath}`], root);
+      if (atCommit.ok && atCommit.out.length > 0) return atCommit.out;
+      const atParent = this.git(['show', `${hash}^:${relPath}`], root);
+      if (atParent.ok && atParent.out.length > 0) return atParent.out;
+    }
+    return null;
   }
 
   /** Validate an agent's cwd the way a spawn does — it must be an ABSOLUTE path
@@ -562,8 +624,6 @@ export class HiveManager {
       writeFileSync(memory, `# Memory — ${meta.name} (${meta.id})\n\n_Append durable facts, decisions, and context below._\n`, 'utf8');
     }
     ensureMineIgnore(dir); // keep settings.json / cursor / messages out of mempalace's index
-    const cursor = join(dir, 'cursor.json');
-    if (!existsSync(cursor)) this.writeJson(cursor, { lastProcessed: null });
 
     // upsert registry — spread the PRIOR entry first so a respawn preserves
     // fields the spawn `meta` doesn't carry, above all `sessionId`. Without this,
@@ -998,34 +1058,6 @@ export class HiveManager {
     for (const id of [...this.proxyChildren.keys()]) this.stopProxyBridge(id);
   }
 
-  /**
-   * Drain an agent's inbox for the Stop hook. Returns whether to block-to-continue
-   * and the message text to feed back. Uses the per-agent cursor so a message is
-   * surfaced exactly once (no infinite loop).
-   */
-  drainForStop(agentId: string): { block: boolean; reason?: string } {
-    const dir = this.agentDir(agentId);
-    if (!existsSync(dir)) return { block: false };
-    const cursorPath = join(dir, 'cursor.json');
-    const cursor = this.readJson<{ lastProcessed: string | null }>(cursorPath, { lastProcessed: null });
-    const fresh = this.inbox(agentId)
-      .filter((m) => !cursor.lastProcessed || m.id > cursor.lastProcessed)
-      .sort((a, b) => (a.id < b.id ? -1 : 1));
-    if (fresh.length === 0) return { block: false };
-
-    cursor.lastProcessed = fresh[fresh.length - 1].id;
-    this.writeJson(cursorPath, cursor);
-    this.appendLog({ kind: 'drain', agentId, count: fresh.length });
-
-    const lines = fresh.map((m) => `- [from ${m.from}, ${m.act}] ${m.subject}: ${m.body}`).join('\n');
-    const reason = [
-      `You have ${fresh.length} new hive message(s) in your inbox. Address them before finishing:`,
-      lines,
-      `Open the files in ${dir}/inbox/ for full detail, act on each, then move handled ones to inbox/.done/. Reply via your outbox if a message requires it.`
-    ].join('\n');
-    return { block: true, reason };
-  }
-
   // — agent-facing text —
 
   private identityText(meta: AgentMeta): string {
@@ -1184,10 +1216,10 @@ export class HiveManager {
         continue;
       }
       // 1d — proxy-tier providers (qwen) CAN receive inbox, but only via a
-      // SYNTHESIZED Stop, which just advances the cursor — the sidecar observes the
-      // CLI's stream and can't inject a drain reason back into its turn. So the real
-      // mail rides the terminal work-order path verbatim, exactly like a hookless
-      // provider; the synthesized Stop→drain keeps the cursor in step.
+      // SYNTHESIZED Stop — the sidecar observes the CLI's stream and can't inject
+      // a drain reason back into its turn. So the real mail rides the terminal
+      // work-order path verbatim, exactly like a hookless provider; the renderer
+      // idle inbox-wake nudge is the guaranteed drain regardless.
       const proxyDesc = bridgeOf(reg.agents[t]?.provider);
       if (t !== godId && proxyDesc?.kind === 'proxy' && proxyDesc.inboxDelivery === 'terminal') {
         if (!this.emitTerminalHandoff(msg, t)) {
@@ -1486,14 +1518,14 @@ export class HiveManager {
   }
 
   /** Codex lifecycle-hook bridge → full hive parity for a `codex` worker (live
-   *  status + Stop→inbox-drain), the codex counterpart of installAgyHooks().
+   *  avatar/status state), the codex counterpart of installAgyHooks().
    *
    *  Codex's hook contract is already Claude-shaped: snake_case stdin
    *  (hook_event_name/tool_name/tool_input/session_id/cwd) and a matching response
-   *  contract, where `Stop` honoring {decision:'block',reason} means "continue,
-   *  using reason as the next prompt" — exactly what drainForStop() returns. So we
-   *  reuse the Claude `cth-hook` shim VERBATIM (no translator, unlike agy) and let
-   *  HookServer handle everything unchanged.
+   *  contract, so we reuse the Claude `cth-hook` shim VERBATIM (no translator,
+   *  unlike agy) and let HookServer handle everything unchanged — including its
+   *  Stop branch, which never forces a continuation (the renderer's idle
+   *  inbox-wake nudge is the guaranteed drain for every provider alike).
    *
    *  ISOLATION: rather than mutate the user's global ~/.codex (which also holds
    *  their login), we point this worker at a PER-AGENT CODEX_HOME (`<dir>/.codex`,
@@ -1534,7 +1566,7 @@ export class HiveManager {
       // this config.toml from the user's (their model/provider/trust settings carry
       // over) and append a `[[hooks.<Event>]]` group per event, each pointing at the
       // SAME cth-hook shim — reused verbatim (Codex's hook payload + response are
-      // already Claude-shaped, so HookServer/drainForStop run unchanged). Regenerated
+      // already Claude-shaped, so HookServer runs unchanged). Regenerated
       // each spawn (idempotent). A single-quoted TOML literal avoids path escaping
       // (hive roots are space/quote-free). NOTE: hooks fire in INTERACTIVE codex
       // sessions (how hive workers run), not in headless `codex exec`.

@@ -1,5 +1,11 @@
 import { useEffect, useRef } from 'react';
-import { useStore, type Agent, type QueuedMessage, type StationKind, type ToolKind } from '@/store/store';
+import {
+  useStore,
+  type Agent,
+  type QueuedMessage,
+  type StationKind,
+  type ToolKind
+} from '@/store/store';
 import {
   buildSpawnCommand,
   ASSISTANT_MODEL,
@@ -18,6 +24,7 @@ import { DEFAULT_CONTEXT_TRIGGER, type ContextRule } from '../../../shared/trigg
 import type { AgentProvider } from '../../../shared/agentProvider';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
 import { deliverWithAcknowledgement } from './queueDelivery';
+import { INBOX_NUDGE_TEXT, nudgeDecision, shouldSuppressStaleNudge, type NudgeState } from './inboxNudge';
 import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 
 const GOD_ID = 'god';
@@ -253,10 +260,12 @@ function passesContextPressure(a: Agent, rule: ContextRule): boolean {
  *      doesn't stall while an agent sits at its prompt.
  */
 export function useHive(config: HarnessConfig | null): void {
-  // Per-agent dedup key for the inbox-wake nudge: the newest inbox message id we
-  // last nudged about. Keyed by id (not count) so an oscillating count after a
-  // drain doesn't re-nudge for the same message set.
-  const nudged = useRef<Record<string, string>>({});
+  // Per-agent inbox-wake bookkeeping: which inbox ids this agent has been nudged
+  // about, and how much of the retry budget that mail has spent. Tracking the id
+  // SET (not a "newest" maximum) is what stops an oscillating count re-nudging for
+  // the same mail, and what stops a hand-authored id that string-sorts low from
+  // being invisible. See inboxNudge.ts for both faults in full.
+  const nudged = useRef<Record<string, NudgeState | undefined>>({});
   // Per-agent timestamp of the last queued-message we submitted. Guards against
   // re-sending the next message before the agent's hooks have flipped it to
   // 'working' (there's a short window where it still reads 'idle' right after we
@@ -603,20 +612,13 @@ export function useHive(config: HarnessConfig | null): void {
       for (const a of agents) {
         try {
           const inbox = await window.cth.hiveInbox(a.id);
-          // Dedup by the newest message id, not the count — a count can oscillate
-          // as messages drain and re-arrive, which would re-nudge for the same set.
-          const newest = inbox.length
-            ? inbox.map((m) => m.id).sort().slice(-1)[0]
-            : '';
-          if (newest && nudged.current[a.id] !== newest) {
-            useStore.getState().enqueueMessage(
-              a.id,
-              'You have new hive inbox message(s) — read your inbox, act on them now, and move handled ones to inbox/.done/. Act autonomously; only message god if you genuinely need a decision.'
-            );
-            nudged.current[a.id] = newest;
-          } else if (!newest) {
-            nudged.current[a.id] = '';
-          }
+          // A nudge of ours still queued means the agent is mid-turn, not starved:
+          // don't stack a second copy and don't spend a retry waiting for it.
+          const pending = (useStore.getState().messageQueues[a.id] ?? [])
+            .some((q) => q.text === INBOX_NUDGE_TEXT);
+          const d = nudgeDecision(nudged.current[a.id], inbox, Date.now(), pending);
+          nudged.current[a.id] = d.state;
+          if (d.nudge) useStore.getState().enqueueMessage(a.id, INBOX_NUDGE_TEXT);
         } catch { /* ignore */ }
       }
     }, 4000);
@@ -710,8 +712,21 @@ export function useHive(config: HarnessConfig | null): void {
       const flightKey = `${srcId}:${next.id}`;
       if (inFlight.has(flightKey)) return { sent: false };
       inFlight.add(flightKey);
-      lastFlush.current[target.id] = now;
       try {
+        // Live re-check, immediately before the write: a wake nudge decided-upon
+        // minutes ago (delivery is idle-gated) can go stale if the agent drained
+        // its own inbox in the meantime through its own autonomous check, not
+        // through either wake path. `nudgeDecision` only stops FUTURE polls once
+        // it next sees empty — it can't retract what's already queued. This is
+        // the only place that can, and it's the last moment before the PTY write.
+        if (next.text === INBOX_NUDGE_TEXT) {
+          const liveInboxSize = await window.cth.hiveInbox(srcId).then((i) => i.length, () => null);
+          if (shouldSuppressStaleNudge(next.text, liveInboxSize)) {
+            removeQueuedMessage(srcId, next.id);
+            return { sent: false };
+          }
+        }
+        lastFlush.current[target.id] = now;
         const sent = await deliverWithAcknowledgement(
           // `instruction` (when present) is the authoritative text to type into
           // the PTY; UI/card surfaces continue to show the readable `text`.
@@ -790,6 +805,40 @@ export function useHive(config: HarnessConfig | null): void {
       } catch { /* best-effort: card promotion must never sink dispatch */ }
     };
 
+    // Matrix peer of ensureSlackCard. Same promote-on-first-dispatch contract,
+    // same idempotency, same best-effort posture — the card carries
+    // matrix:{roomId,threadRootId} so the main-process Matrix done-observer can
+    // post its one summary reply into the originating thread. Kept as a separate
+    // function rather than a parameterised one so neither transport can ever
+    // write the other's origin field onto a card.
+    const ensureMatrixCard = async (m: QueuedMessage): Promise<void> => {
+      const matrix = m.matrix;
+      if (!matrix) return;
+      try {
+        const raw = await window.cth.hiveTasks();
+        const existing: SlackTaskCard[] =
+          raw && typeof raw === 'object' && Array.isArray((raw as { tasks?: unknown }).tasks)
+            ? (raw as { tasks: SlackTaskCard[] }).tasks
+            : [];
+        // The thread root is stable per conversation and the queued-message id is
+        // unique per request, so the same mention can never promote twice.
+        const id = `matrix-${matrix.threadRootId}-${m.id}`;
+        if (existing.some((t) => t.id === id)) return;
+        const title = m.text.length > 80 ? `${m.text.slice(0, 79)}…` : m.text;
+        const card: SlackTaskCard = {
+          id,
+          title,
+          description: m.text,
+          status: 'todo',
+          dependsOn: [],
+          priority: 1,
+          createdAt: new Date().toISOString(),
+          matrix
+        };
+        await window.cth.hiveWriteTasks([...existing, card]);
+      } catch { /* best-effort: card promotion must never sink dispatch */ }
+    };
+
     const flush = () => {
       const { agents, messageQueues } = useStore.getState();
       const byId = (id: string) => agents.find((a) => a.id === id);
@@ -799,6 +848,7 @@ export function useHive(config: HarnessConfig | null): void {
         if (!messageQueues[a.id]?.length) continue;
         void dispatch(a.id, a).then(({ sent, message }) => {
           if (sent && message?.slack) void ensureSlackCard(message);
+          if (sent && message?.matrix) void ensureMatrixCard(message);
         });
       }
     };
@@ -848,6 +898,32 @@ export function useHive(config: HarnessConfig | null): void {
         thread_ts: msg.thread_ts,
         text: ':hourglass_flowing_sand: *Received.* Your request has been queued — the team is on it and will reply here when done.'
       });
+    });
+  }, [config?.onboardingComplete]);
+
+  // 5a) Pipe inbound Matrix messages into Michael's queue — the peer of effect
+  //     #5 above, running ALONGSIDE Slack, never instead of it. The main-process
+  //     /sync listener has already done echo suppression, mention/thread matching
+  //     and event_id dedup, so anything arriving here is a genuine request.
+  //
+  //     Two deliberate differences from the Slack lane, both because Matrix has
+  //     no equivalent plumbing yet rather than because they were overlooked:
+  //       - NO immediate "queued" acknowledgement. Slack's ack goes out through
+  //         the loopback reply endpoint; Matrix agents reply through the
+  //         integration broker instead, which the renderer cannot reach.
+  //       - NO attachment download. Matrix media arrives as an mxc:// URI that
+  //         needs an authenticated fetch through the homeserver; until that
+  //         exists a media message contributes its text body only.
+  useEffect(() => {
+    if (!config?.onboardingComplete) return;
+    return window.cth.onMatrixMessage?.((msg) => {
+      if (!msg?.text?.trim() || !msg.roomId || !msg.threadRootId) return;
+      const text = msg.text.trim();
+      const matrix = { roomId: msg.roomId, threadRootId: msg.threadRootId };
+      // Same split as Slack: raw `text` drives the human-facing card, while the
+      // autonomy preamble supplied by main is prepended ONLY to god's PTY prompt.
+      const instruction = msg.autonomyPreamble ? `${msg.autonomyPreamble}${text}` : undefined;
+      useStore.getState().enqueueMessage(GOD_ID, text, { matrix, instruction });
     });
   }, [config?.onboardingComplete]);
 

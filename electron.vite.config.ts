@@ -2,6 +2,8 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import { resolve, dirname } from 'node:path';
 import { readFileSync, copyFileSync, mkdirSync, statSync } from 'node:fs';
+// Same untyped-.cjs-require pattern as src/main/matrix.ts / slack.ts.
+const mainSidecarAssets = require('./tools/main-sidecar-assets.cjs') as Array<[string, string]>;
 
 // Single source of truth for the displayed app version: package.json.
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
@@ -24,18 +26,19 @@ const defineMain = {
 // missing from out/main — which crashed the packaged app (#66) AND `npm run
 // dev` (#67). A writeBundle hook runs after the main build in BOTH dev and
 // build, so the sidecar is emitted from a single place for every path.
+//
+// The list itself lives in tools/main-sidecar-assets.cjs, shared with
+// tools/copy-main-assets.cjs's packaged-app copy step — two independently
+// hand-maintained copies of this list previously drifted (Matrix's sidecar
+// landed in one and not the other), which is exactly the #67 failure mode
+// recurring silently: `npm run dev` requiring a .cjs file that was never
+// copied, throwing before any network call and leaving no trace typecheck or
+// test:focused could see.
 function copyMainSidecars() {
-  const ASSETS: Array<[string, string]> = [
-    ['src/main/slack-trigger.cjs', 'out/main/slack-trigger.cjs'],
-    // Knowledge Graph core: required by knowledge.ts at runtime (pure-JS, no
-    // native deps), so it must be emitted next to the main bundle like the
-    // Slack sidecar above.
-    ['src/main/kg-core.cjs', 'out/main/kg-core.cjs']
-  ];
   return {
     name: 'copy-main-cjs-sidecars',
     writeBundle() {
-      for (const [fromRel, toRel] of ASSETS) {
+      for (const [fromRel, toRel] of mainSidecarAssets) {
         const from = resolve(__dirname, fromRel);
         const to = resolve(__dirname, toRel);
         mkdirSync(dirname(to), { recursive: true });

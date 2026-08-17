@@ -18,6 +18,8 @@ import { OfficeThemePicker } from './OfficeThemePicker';
 import { McpDefaultsSettings } from './McpDefaultsSettings';
 import { IntegrationsRegistry } from './IntegrationsRegistry';
 import { AiEnginesSettings } from './AiEnginesSettings';
+import { integrationsClient } from '@/integrations/registryClient';
+import { buildMatrixIntegrationRecord, findMatrixRecord } from './matrixIntegrationRecord';
 import { REALTIME_MODEL } from '@shared/realtimePricing';
 import { RealtimeDevicePicker } from '@/realtime/DevicePicker';
 import { CostHud } from '@/realtime/CostHud';
@@ -294,6 +296,44 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   // Whether the connect-steps help panel is expanded.
   const [showSlackHelp, setShowSlackHelp] = useState(false);
 
+  // --- Matrix integration (self-hosted peer transport, additive alongside Slack) ---
+  // No start/stop lifecycle here (unlike Slack): the /sync listener lives in
+  // src/main/matrix.ts / matrix-trigger.cjs, owned by a different lane. This
+  // block only persists the config keys those files read.
+  const [matrixEnabled, setMatrixEnabled] = useState(config.matrixEnabled ?? false);
+  const [matrixHomeserverUrl, setMatrixHomeserverUrl] = useState(config.matrixHomeserverUrl ?? '');
+  const [matrixUserId, setMatrixUserId] = useState(config.matrixUserId ?? '');
+  const [matrixRoomIdsText, setMatrixRoomIdsText] = useState((config.matrixRoomIds ?? []).join('\n'));
+  const [matrixBusy, setMatrixBusy] = useState(false);
+  const [matrixNote, setMatrixNote] = useState('');
+  // Smoke test: separate busy/note pair so a test result doesn't overwrite the
+  // save confirmation the user just read (and vice versa).
+  const [matrixTestBusy, setMatrixTestBusy] = useState(false);
+  const [matrixTestLines, setMatrixTestLines] = useState<Array<{ ok: boolean; text: string }>>([]);
+  // The bot's OUTBOUND access token. WRITE-ONLY, exactly like the Integrations
+  // tab: this buffer travels one way into the encrypted store and is cleared on
+  // success — `integrationsList` redacts the stored value to a boolean, so there
+  // is nothing to echo back. `matrixTokenStored` is that boolean.
+  const [matrixToken, setMatrixToken] = useState('');
+  const [matrixTokenStored, setMatrixTokenStored] = useState(false);
+  const [showMatrixToken, setShowMatrixToken] = useState(false);
+  // Health snapshot of the /sync listener. `matrix:status` and the preload
+  // bridge already existed — nothing in the renderer ever called them, so a
+  // listener that refuses to start (bad token, unjoined room, an encrypted
+  // room) was completely invisible: no error, no badge, nothing a user could
+  // reach. Polled (see the effect below) rather than fetched once, since the
+  // listener restart this triggers (config:update → reconcileMatrixClient) is
+  // fire-and-forget in main and its result lands a moment after this modal's
+  // own save/test calls resolve.
+  const [matrixHealth, setMatrixHealth] = useState<{
+    running: boolean; healthy: boolean; userId: string | null;
+    encryptedRooms: string[]; messagesEmitted: number;
+    lastError: string | null; fatalError: string | null;
+  } | null>(null);
+  // Distinct from matrixHealth === null ("no snapshot yet") — otherwise an IPC
+  // failure and "still checking" render as the same permanent "checking…".
+  const [matrixHealthError, setMatrixHealthError] = useState(false);
+
   // --- Webhook triggers (a LIST; src/shared/triggers.ts owns the type) ---------
   // The list itself lives in the store, not in local state: the Triggers tab
   // edits the same webhooks, and one of the two surfaces holding a private copy
@@ -445,6 +485,10 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       setSlackChannel(cc.slackChannelId ?? '');
       setSlackPort(String(cc.slackPort ?? 3847));
       setSlackProactivePosting(cc.slackProactivePosting ?? false);
+      setMatrixEnabled(cc.matrixEnabled ?? false);
+      setMatrixHomeserverUrl(cc.matrixHomeserverUrl ?? '');
+      setMatrixUserId(cc.matrixUserId ?? '');
+      setMatrixRoomIdsText((cc.matrixRoomIds ?? []).join('\n'));
       const kgOn = (cc as { knowledgeGraph?: { enabled?: boolean } }).knowledgeGraph?.enabled === true;
       setKgEnabled(kgOn);
       setFreeflowEnabled(cc.freeflowEnabled !== false);
@@ -454,6 +498,12 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     }).catch(() => { /* keep prop-seeded values */ });
     window.cth.kgStatus().then((s) => { if (alive) setKgDocCount(s.docCount); })
       .catch(() => { /* status unavailable */ });
+    // Whether a Matrix bot token is already stored. Only the presence boolean
+    // crosses IPC; the token itself never comes back, so this drives the
+    // "stored / not stored" line rather than prefilling the input.
+    void integrationsClient.list().then((recs) => {
+      if (alive) setMatrixTokenStored(findMatrixRecord(recs)?.hasSecret === true);
+    }).catch(() => { /* registry unavailable - assume nothing stored */ });
     // Hydrate live connection state + the persisted Request URL: the
     // tunnel URL lives in main, so reopening Settings while connected re-shows it.
     window.cth.slackStatus().then((s) => {
@@ -482,6 +532,23 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       } catch { /* status unavailable - assume not listening */ }
     })();
     return () => { alive = false; };
+  }, []);
+
+  // Poll the Matrix health snapshot while Settings is open. Polling (rather
+  // than a single fetch on mount) because reconcileMatrixClient() runs
+  // fire-and-forget in main — a save or "send test message" here returns
+  // before the listener has actually finished (re)starting, so a one-shot
+  // fetch would race it and show stale state.
+  useEffect(() => {
+    let alive = true;
+    const poll = () => {
+      void window.cth.matrixStatus()
+        .then((s) => { if (alive) { setMatrixHealth(s); setMatrixHealthError(false); } })
+        .catch(() => { if (alive) setMatrixHealthError(true); });
+    };
+    poll();
+    const timer = setInterval(poll, 5000);
+    return () => { alive = false; clearInterval(timer); };
   }, []);
 
   /** Persist the current Slack inputs. Returns the resolved config patch. */
@@ -530,6 +597,140 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     try { await window.cth.slackStop(); setRunning(false); setSlackNote('stopped'); }
     catch (e) { setSlackNote(e instanceof Error ? e.message : String(e)); }
     finally { setSlackBusy(false); }
+  };
+
+  /** Persist the Matrix config keys via the generic config:update IPC — there is
+   *  no bespoke matrixSetConfig/start/stop (unlike Slack): the /sync listener
+   *  and its lifecycle belong to a different lane's files. Room ids/aliases are
+   *  entered one per line and split here. */
+  const saveMatrix = async (enabled: boolean) => {
+    setMatrixBusy(true); setMatrixNote('');
+    try {
+      // One trimmed value, written to BOTH persistence paths — config (what the
+      // /sync listener and matrixOutboundCredentials read) and the integration
+      // record (what the broker forwards to). Trimming twice is how those two
+      // drift apart.
+      const homeserverUrl = matrixHomeserverUrl.trim();
+      const roomIds = matrixRoomIdsText.split('\n').map((s) => s.trim()).filter(Boolean);
+
+      // ORDER IS LOAD-BEARING: the token must be stored BEFORE the config write.
+      // `config:update` reconciles the /sync listener SYNCHRONOUSLY when the patch
+      // carries a matrix key (src/main/index.ts:3179), and `startMatrixClient`
+      // reads `matrixOutboundCredentials()` before its first await (index.ts:1788)
+      // — so saving config first makes that reconcile read a token that is still
+      // seconds away from existing. It bails out, and the bot neither listens nor
+      // replies until a second save. Nothing else reconciles: upsert and setSecret
+      // do not, so the stale listener would simply persist.
+      //
+      // Turning the block OFF skips the record write entirely: writing it would
+      // either disable an integration the user configured under the Integrations
+      // tab, or claim enabled:true while they just switched Matrix off.
+      let note = 'saved';
+      if (enabled) {
+        // Caught HERE rather than by the outer handler: a registry that is down,
+        // or a token the gate rejects, must not cost the user their homeserver,
+        // bot id and room list. The config write below is unconditional.
+        try { note = await syncMatrixIntegration(homeserverUrl); }
+        catch (e) { note = e instanceof Error ? e.message : String(e); }
+      }
+
+      await window.cth.updateConfig({
+        matrixEnabled: enabled,
+        matrixHomeserverUrl: homeserverUrl,
+        matrixUserId: matrixUserId.trim(),
+        matrixRoomIds: roomIds
+      } as Partial<HarnessConfig>);
+      setMatrixEnabled(enabled);
+      setMatrixNote(note);
+    } catch (e) {
+      setMatrixNote(e instanceof Error ? e.message : String(e));
+    } finally { setMatrixBusy(false); }
+  };
+
+  /**
+   * Post a real message to every configured room, end to end.
+   *
+   * Saves first: the test reads config in the main process, so testing unsaved
+   * edits would silently test the OLD values and report a green that means
+   * nothing. Main also rewrites room names/aliases to real ids as part of the
+   * test — `roomIdsRewritten` is the signal to pull those back into the textarea
+   * so the field shows what the listener is actually filtering on.
+   */
+  const sendMatrixTest = async (): Promise<void> => {
+    setMatrixTestBusy(true);
+    setMatrixTestLines([]);
+    try {
+      await saveMatrix(matrixEnabled);
+      const res = await window.cth.matrixSendTest({});
+      const lines: Array<{ ok: boolean; text: string }> = [];
+      if (res.userId) lines.push({ ok: true, text: `token verified — the bot is ${res.userId}` });
+      if (res.error) lines.push({ ok: false, text: res.error });
+      for (const r of res.results ?? []) {
+        if (r.ok) {
+          const how = r.via === 'name' ? ` (matched by name → ${r.roomId})`
+            : r.via === 'alias' ? ` (alias → ${r.roomId})` : '';
+          lines.push({ ok: true, text: `sent to ${r.input}${how}` });
+        } else {
+          lines.push({ ok: false, text: `${r.input}: ${r.error ?? 'send failed'}` });
+        }
+      }
+      if (res.roomIdsRewritten) {
+        const cfg = await window.cth.getConfig();
+        setMatrixRoomIdsText((cfg.matrixRoomIds ?? []).join('\n'));
+        lines.push({ ok: true, text: 'room ids rewritten to their real ids so the listener can match them' });
+      }
+      setMatrixTestLines(lines);
+    } catch (e) {
+      setMatrixTestLines([{ ok: false, text: e instanceof Error ? e.message : String(e) }]);
+    } finally { setMatrixTestBusy(false); }
+  };
+
+  /**
+   * The second half of a Matrix save: the integration record whose encrypted
+   * secret is the bot's OUTBOUND access token.
+   *
+   * `matrixOutboundCredentials()` (src/main/index.ts) needs four things at once —
+   * a configured homeserver, a record it can find, `record.enabled`, and a stored
+   * secret — so every failure here returns a note instead of letting the block
+   * read "saved" over credentials that resolve to null. Upsert runs FIRST and
+   * setSecret is skipped when it fails (integrationsClient.save): the upsert is
+   * the fail-closed validation gate, and storing a token against a record that
+   * was rejected would leave an orphan secret behind a green note.
+   *
+   * Runs on EVERY save, not just token saves: the record's baseUrl has to follow
+   * an edited Homeserver URL or the broker keeps posting at the old origin.
+   *
+   * Called BEFORE the config write — see the ordering note in saveMatrix. Takes
+   * the homeserver as an argument precisely so it does not depend on config
+   * having been persisted first.
+   */
+  const syncMatrixIntegration = async (homeserverUrl: string): Promise<string> => {
+    const token = matrixToken.trim();
+    // Re-mask on every save ATTEMPT, not just success: a failed save leaves an
+    // error note on screen, and a revealed credential has no business sitting
+    // there next to it. The buffer itself is kept for a retry.
+    if (token) setShowMatrixToken(false);
+    if (!homeserverUrl) {
+      // '' fails the shared baseUrl check, so the record cannot be written. Say
+      // so rather than reporting a token save that did not happen.
+      return token ? 'settings saved — add the homeserver URL to store the access token' : 'saved';
+    }
+    const [templates, records] = await Promise.all([
+      integrationsClient.listTemplates(),
+      integrationsClient.list()
+    ]);
+    // Nothing typed and nothing registered yet: no record to keep in step, and
+    // an empty one would only give the credential lookup something to find.
+    if (!token && !findMatrixRecord(records)) return 'saved';
+
+    const built = buildMatrixIntegrationRecord({ templates, records, homeserverUrl, now: Date.now() });
+    if (!built.ok) return built.error;
+    const res = await integrationsClient.save(built.record, token || undefined);
+    if (!res.ok) return res.error || 'could not store the access token';
+    if (!token) return 'saved';
+    setMatrixToken(''); // write-only: the buffer is cleared, never re-read
+    setMatrixTokenStored(true);
+    return 'saved — access token stored';
   };
 
   // --- Webhook trigger handlers ---
@@ -1453,6 +1654,245 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                               <code>message.channels</code> / <code>message.groups</code> bot event, set the
                               Request URL above, and reinstall to your workspace. The tunnel URL changes on every
                               restart, so re-paste it after pressing Start again.
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ height: 2, background: 'var(--cth-ink-300)' }} />
+
+                      {/* Matrix integration — self-hosted peer transport, additive
+                          alongside Slack. No Start/Stop lifecycle here (unlike
+                          Slack): this block only persists the homeserver/room/user
+                          config keys that the /sync listener (owned elsewhere)
+                          reads, PLUS the bot's outbound access token — which is
+                          stored as the "Matrix" integration record so it stays
+                          behind the encrypted secret store, never in config. */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div style={{
+                          fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px',
+                          color: 'var(--cth-ink-500)', textTransform: 'uppercase', marginBottom: 2
+                        }}>
+                          Matrix
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
+                              Matrix integration
+                            </span>
+                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                              Self-hosted homeserver rooms, piped into Michael's queue like Slack.
+                            </span>
+                          </div>
+                          <PixelButton
+                            variant={matrixEnabled ? 'primary' : 'secondary'}
+                            size="sm"
+                            disabled={matrixBusy}
+                            onClick={() => { void saveMatrix(!matrixEnabled); }}
+                          >
+                            {matrixEnabled ? 'on' : 'paused'}
+                          </PixelButton>
+                        </div>
+
+                        {!matrixEnabled && (
+                          <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                            Paused, not revoked — the bot stops listening and replying, but the stored homeserver
+                            token stays available to workers through the integration record; disable it under
+                            Connections → Integrations to actually revoke access.
+                          </span>
+                        )}
+
+                        {matrixEnabled && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Homeserver URL</span>
+                              <input
+                                value={matrixHomeserverUrl}
+                                onChange={(e) => setMatrixHomeserverUrl(e.target.value)}
+                                placeholder="https://matrix.your-domain.tld"
+                                style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                              />
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                Your own homeserver's client-server origin — never matrix.org.
+                              </span>
+                            </label>
+
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Bot user id</span>
+                              <input
+                                value={matrixUserId}
+                                onChange={(e) => setMatrixUserId(e.target.value)}
+                                placeholder="@bot:your-domain.tld"
+                                style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                              />
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                Used to filter the bot's own events out of its own room sync.
+                              </span>
+                            </label>
+
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Room ids / aliases (one per line)</span>
+                              <textarea
+                                value={matrixRoomIdsText}
+                                onChange={(e) => setMatrixRoomIdsText(e.target.value)}
+                                placeholder={'!abc123:your-domain.tld\n#general:your-domain.tld'}
+                                rows={3}
+                                style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)', resize: 'vertical' }}
+                              />
+                              {/* The room filter is an exact-match set against
+                                  /sync keys, which are always `!id:server`. A
+                                  bare display name used to match nothing at all,
+                                  with no error anywhere — so say what the field
+                                  takes, and what happens to a name. */}
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                An id (<code>!abc123:your-domain.tld</code>) or an alias
+                                (<code>#general:your-domain.tld</code>). A plain room name like{' '}
+                                <code>Agent Chat</code> also works — "send test message" resolves it to the real id
+                                and rewrites it here.
+                              </span>
+                            </label>
+
+                            {/* The bot's OUTBOUND access token. Same write-only
+                                treatment as the Integrations tab — masked, never
+                                echoed back, cleared once stored. Saving it writes
+                                the "Matrix" integration record too, which is what
+                                the main process reads when the bot replies. */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Matrix bot access token</span>
+                              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                <input
+                                  type={showMatrixToken ? 'text' : 'password'}
+                                  value={matrixToken}
+                                  onChange={(e) => setMatrixToken(e.target.value)}
+                                  placeholder={matrixTokenStored ? 'Paste a new token to replace the stored one' : 'syt_…'}
+                                  autoComplete="off"
+                                  style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                                />
+                                <PixelButton
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => setShowMatrixToken((s) => !s)}
+                                  disabled={!matrixToken}
+                                >
+                                  {showMatrixToken ? 'hide' : 'show'}
+                                </PixelButton>
+                              </div>
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                {matrixTokenStored
+                                  ? '🔒 A token is stored, encrypted. Leave this blank to keep it.'
+                                  : 'No token stored yet — the bot can read rooms but cannot reply until you add one.'}
+                              </span>
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                Log the bot account in via POST /_matrix/client/v3/login on your homeserver and paste
+                                its access_token. Write-only: it is encrypted in the main process and never shown again.
+                              </span>
+                            </label>
+
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <PixelButton variant="primary" size="sm" onClick={() => saveMatrix(matrixEnabled)} disabled={matrixBusy}>
+                                {matrixBusy ? '...' : 'save'}
+                              </PixelButton>
+                              {matrixNote && (
+                                <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{matrixNote}</span>
+                              )}
+                            </div>
+
+                            {/* The only proof that the whole outbound chain works:
+                                token → account → room membership → a real event in
+                                a real room. Saves first, because main tests what is
+                                on disk, not what is in these inputs. */}
+                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                              <PixelButton
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => { void sendMatrixTest(); }}
+                                disabled={matrixTestBusy || matrixBusy}
+                              >
+                                {matrixTestBusy ? 'sending...' : 'send test message'}
+                              </PixelButton>
+                              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
+                                Saves, verifies the token's account, then posts to every room above.
+                              </span>
+                            </div>
+                            {matrixTestLines.length > 0 && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                {matrixTestLines.map((l, i) => (
+                                  <span
+                                    key={i}
+                                    style={{
+                                      fontSize: 12, lineHeight: '16px',
+                                      color: l.ok ? 'var(--cth-ink-500)' : 'var(--cth-danger, #b3261e)'
+                                    }}
+                                  >
+                                    {l.ok ? '✓' : '✗'} {l.text}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* INBOUND health. "send test message" only proves outbound —
+                                a /sync listener that refuses to start (bad token, an
+                                unjoined room, an encrypted room) is otherwise invisible:
+                                no error, no badge, nothing a user could reach. This reads
+                                the same matrix:status the outbound test never touches. */}
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>Inbound listener health</span>
+                              {matrixHealth === null ? (
+                                <span style={{
+                                  fontSize: 12, lineHeight: '16px',
+                                  color: matrixHealthError ? 'var(--cth-danger, #b3261e)' : 'var(--cth-ink-500)'
+                                }}>
+                                  {matrixHealthError ? 'could not reach the Matrix status check' : 'checking…'}
+                                </span>
+                              ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                  <span
+                                    style={{
+                                      fontSize: 12, lineHeight: '16px',
+                                      color: matrixHealth.healthy ? 'var(--cth-ink-500)' : 'var(--cth-danger, #b3261e)'
+                                    }}
+                                  >
+                                    {matrixHealth.healthy ? '✓' : '✗'}{' '}
+                                    {!matrixHealth.running
+                                      ? 'not running'
+                                      : matrixHealth.healthy
+                                        ? 'running — healthy'
+                                        : 'running, but unhealthy — see below'}
+                                  </span>
+                                  {matrixHealth.userId && (
+                                    <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                      bot: {matrixHealth.userId}
+                                    </span>
+                                  )}
+                                  <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                    messages received: {matrixHealth.messagesEmitted}
+                                  </span>
+                                  {matrixHealth.encryptedRooms.length > 0 && (
+                                    <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-danger, #b3261e)' }}>
+                                      {matrixHealth.encryptedRooms.length === 1 ? 'this room is' : 'these rooms are'}{' '}
+                                      end-to-end encrypted: {matrixHealth.encryptedRooms.join(', ')} — the bot cannot
+                                      read {matrixHealth.encryptedRooms.length === 1 ? 'it' : 'them'}; use an unencrypted
+                                      room instead.
+                                    </span>
+                                  )}
+                                  {matrixHealth.fatalError && (
+                                    <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-danger, #b3261e)' }}>
+                                      fatal: {matrixHealth.fatalError}
+                                    </span>
+                                  )}
+                                  {!matrixHealth.fatalError && matrixHealth.lastError && (
+                                    <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-danger, #b3261e)' }}>
+                                      last error: {matrixHealth.lastError}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                              Saving registers the homeserver and token as the "Matrix" integration, so the bot can post
+                              replies through the loopback broker. The token itself never leaves the encrypted store —
+                              the Integrations tab shows the same entry if you'd rather manage it there.
                             </span>
                           </div>
                         )}

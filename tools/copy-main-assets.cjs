@@ -2,13 +2,9 @@
 
 const { copyFileSync, mkdirSync, statSync } = require('node:fs');
 const { dirname, join } = require('node:path');
+const MAIN_ASSETS = require('./main-sidecar-assets.cjs');
 
 const ROOT = join(__dirname, '..');
-const MAIN_ASSETS = [
-  ['src/main/slack-trigger.cjs', 'out/main/slack-trigger.cjs'],
-  // Knowledge Graph core (pure-JS, no native deps) — required by knowledge.ts.
-  ['src/main/kg-core.cjs', 'out/main/kg-core.cjs'],
-];
 
 for (const [fromRel, toRel] of MAIN_ASSETS) {
   const from = join(ROOT, fromRel);

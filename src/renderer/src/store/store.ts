@@ -7,6 +7,7 @@ import type { AgentProvider } from '@shared/agentProvider';
 import type { HireManifest } from '@shared/hire';
 import { DEFAULT_ORG_TRIGGER, type OrgTriggerConfig, type WebhookTrigger } from '@shared/triggers';
 import { isCompactionCommand } from '@shared/providerAutomation';
+import { INBOX_NUDGE_TEXT } from '@/hooks/inboxNudge';
 
 export type ToolKind =
   | 'Read' | 'Edit' | 'Write' | 'Bash' | 'WebFetch' | 'WebSearch'
@@ -110,6 +111,9 @@ export interface QueuedMessage {
   ts: number;
   /** Slack-originated: thread coordinates so the office can reply in-thread. */
   slack?: { channel: string; thread_ts: string };
+  /** Matrix-originated: room + thread root so the office can reply in-thread.
+   *  The exact peer of `slack` above; the two lanes never share a field. */
+  matrix?: { roomId: string; threadRootId: string };
   /** Optional override for the text actually typed into the agent's PTY. When set,
    *  the drain submits THIS instead of `text`, while UI/card surfaces keep using
    *  `text`. Used by Slack-origin work to carry the autonomy preamble to god's
@@ -120,6 +124,18 @@ export interface QueuedMessage {
    *  so it delivers the moment the terminal is actually free. */
   manual?: boolean;
 }
+
+/** The generic "go read your inbox" nudge useHive's poller queues on arrival
+ *  (see useHive's inbox-poll effect). Content-free and idempotent — like
+ *  `/compact`, a second copy queued before the first is delivered tells the
+ *  agent nothing the first didn't, so `enqueueMessage` caps it at one
+ *  pending copy per agent rather than let a backlog of stale wakes build up.
+ *  Aliased to inboxNudge.ts's constant (not a second literal) so the two can
+ *  never drift apart the way HIVE_INBOX_WAKE_TEXT and INBOX_NUDGE_TEXT once
+ *  silently did — this file's guard below and the poller's own pending-check
+ *  are comparing the SAME string by construction, not by two humans copying
+ *  it correctly twice. */
+export const HIVE_INBOX_WAKE_TEXT = INBOX_NUDGE_TEXT;
 
 // 'files' retired in v0.3.4 (the per-agent IDE button superseded it) — a
 // persisted 'files' selection falls back to 'terminal' on load. 'git' added in
@@ -247,7 +263,7 @@ interface State {
   /** Park a message for an agent. Returns nothing; the flush loop delivers it.
    *  `meta.instruction`, when set, is what gets typed into the PTY instead of
    *  `text` (UI/card surfaces still show `text`). */
-  enqueueMessage: (agentId: string, text: string, meta?: { slack?: { channel: string; thread_ts: string }; instruction?: string }) => void;
+  enqueueMessage: (agentId: string, text: string, meta?: { slack?: { channel: string; thread_ts: string }; matrix?: { roomId: string; threadRootId: string }; instruction?: string }) => void;
   /** Drop a single queued message (user removed it, or it was just delivered). */
   removeQueuedMessage: (agentId: string, messageId: string) => void;
   /** "Send now" while floor auto-delivery is paused: marks the message manual
@@ -736,9 +752,20 @@ export const useStore = create<State>((set) => ({
       if (isCompactionCommand(trimmed) && queued.some((m) => isCompactionCommand(m.text))) {
         return s;
       }
+      // ONE PENDING INBOX-WAKE PER AGENT, same reasoning as compact above. The
+      // poller (useHive's inboxNudge.ts) already checks its OWN queue before
+      // deciding to nudge again, but it's a setInterval(async ...) with nothing
+      // stopping two overlapping ticks from both reading "not pending" and both
+      // enqueueing. This guard is the layer that still catches that case: it
+      // sits at insertion, for any caller, regardless of what the decide-side
+      // check saw.
+      if (trimmed === HIVE_INBOX_WAKE_TEXT && queued.some((m) => m.text === HIVE_INBOX_WAKE_TEXT)) {
+        return s;
+      }
       const msg: QueuedMessage = {
         id: newQueuedId(), text: trimmed, ts: Date.now(),
         ...(meta?.slack ? { slack: meta.slack } : {}),
+        ...(meta?.matrix ? { matrix: meta.matrix } : {}),
         ...(meta?.instruction ? { instruction: meta.instruction } : {})
       };
       const messageQueues = { ...s.messageQueues, [agentId]: [...(s.messageQueues[agentId] ?? []), msg] };

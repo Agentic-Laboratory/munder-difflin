@@ -334,5 +334,24 @@ export const INTEGRATION_TEMPLATES: IntegrationTemplate[] = [
     secretHelp: 'HubSpot → Settings → Integrations → Private Apps → create app → Access token (scopes crm.objects.*).',
     docsUrl: 'https://developers.hubspot.com/docs/api/crm/understanding-the-crm',
     idSuggestion: 'hubspot'
+  },
+
+  // ─── Matrix (self-hosted peer transport, M3) ────────────────────────────────
+  // A registered Matrix integration is how the bot's access token gets stored
+  // encrypted and reached through the loopback broker for OUTBOUND client-server
+  // API calls (posting messages, etc). SELF-HOSTED: baseUrl is left blank like
+  // Custom REST — the user's own homeserver origin, never a hardcoded matrix.org
+  // default. Inbound /sync listening + homeserver/room/user settings live in
+  // src/main/config.ts (matrixHomeserverUrl/matrixUserId/matrixRoomIds/matrixEnabled),
+  // not in this record.
+  {
+    kind: 'custom-rest',
+    label: 'Matrix',
+    baseUrl: '',
+    authType: 'bearer',
+    secretLabel: 'Matrix bot access token',
+    secretHelp: 'From your self-hosted homeserver: log the bot account in via POST /_matrix/client/v3/login (or an admin token mint) to get an access_token. Base URL is your homeserver’s client-server origin, e.g. https://matrix.your-domain.tld.',
+    docsUrl: 'https://spec.matrix.org/latest/client-server-api/',
+    idSuggestion: 'matrix'
   }
 ];

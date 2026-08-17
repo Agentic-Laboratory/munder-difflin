@@ -96,6 +96,13 @@ export interface HarnessConfig {
   /** Opt-in app/voice-initiated proactive Slack posting (default OFF). Mirrors
    *  src/main/config.ts; the Slack-origin done-reply round-trip is never gated. */
   slackProactivePosting?: boolean;
+  /** Matrix peer transport, additive alongside Slack (mirrors src/main/config.ts).
+   *  The bot's access token is never in this object — it lives behind a
+   *  registered "Matrix" integration (secretRef), reached via the loopback broker. */
+  matrixEnabled?: boolean;
+  matrixHomeserverUrl?: string;
+  matrixUserId?: string;
+  matrixRoomIds?: string[];
   /** Free Flow voice dictation (mirrors src/main/config.ts). */
   freeflowEnabled?: boolean;
   groqApiKey?: string;

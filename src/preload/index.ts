@@ -156,6 +156,9 @@ export interface HiveTask {
   result?: string;
   /** Origin thread for a Slack-sourced task (drives the done-summary reply). */
   slack?: { channel: string; thread_ts: string };
+  /** Origin room + thread root for a Matrix-sourced task (drives the Matrix
+   *  done-summary reply). Peer of `slack`; the lanes are independent. */
+  matrix?: { roomId: string; threadRootId: string };
   /** SHA-256 of the capability token for a generic-webhook-sourced task (drives
    *  the GET status lookup; the raw token is never persisted). */
   webhook?: { tokenHash: string };
@@ -285,6 +288,14 @@ export interface HarnessConfig {
   slackChannelId?: string;
   slackPort?: number;
   slackProactivePosting?: boolean;
+  // Matrix. Mirrors src/main/config.ts — the access token is deliberately absent:
+  // it lives in the encrypted integration store, never in config.json.
+  matrixEnabled?: boolean;
+  matrixHomeserverUrl?: string;
+  matrixUserId?: string;
+  /** Resolved `!id:server` room ids. `matrix:sendTest` rewrites names/aliases
+   *  into this shape, because the /sync filter matches ids and nothing else. */
+  matrixRoomIds?: string[];
   webhookEnabled?: boolean;
   webhookSecret?: string;
   webhookPort?: number;
@@ -1021,6 +1032,37 @@ const api = {
    *  archives it automatically via pty:kill; this is the explicit primitive. */
   hiveSetArchived: (id: string, archived: boolean): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('hive:setArchived', id, archived),
+
+  // ─── Matrix integration (Matrix @-mention → Michael's queue) ────────────────
+  /** Register a listener for inbound Matrix messages; returns an unsubscribe fn.
+   *  The Matrix peer of `onSlackMessage`: `roomId` ≈ channel and `threadRootId`
+   *  ≈ thread_ts, which together are what a reply is posted back into. There is
+   *  no `files` field — attachments arrive as `mxc://` URIs the main process
+   *  does not download (Slack's bot-token download path has no Matrix analogue
+   *  yet), so a media-only mention carries its text body alone. */
+  onMatrixMessage: (cb: (msg: { text: string; roomId: string; eventId: string; threadRootId: string; sender: string; autonomyPreamble?: string }) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, msg: { text: string; roomId: string; eventId: string; threadRootId: string; sender: string; autonomyPreamble?: string }) => cb(msg);
+    ipcRenderer.on('matrix:incomingMessage', listener);
+    return () => ipcRenderer.removeListener('matrix:incomingMessage', listener);
+  },
+  /** Health snapshot of the /sync listener — running/healthy, the bot's mxid, and
+   *  any room proven encrypted (i.e. unreadable). Settings and the live proof
+   *  read this; there is no matrixStart/matrixStop because the listener is
+   *  reconciled from config:update, not driven by a bespoke button pair. */
+  matrixStatus: (): Promise<{ running: boolean; healthy: boolean; userId: string | null; encryptedRooms: string[]; messagesEmitted: number; lastError: string | null; fatalError: string | null } | null> =>
+    ipcRenderer.invoke('matrix:status'),
+
+  /** Smoke-test the outbound path: verify the stored token's account, resolve the
+   *  configured rooms to real ids (rewriting config when they were names/aliases),
+   *  and post one message per room. The token stays in main — this returns ids
+   *  and errors only. `roomIdsRewritten` means Settings should re-read config. */
+  matrixSendTest: (req?: { text?: string }): Promise<{
+    ok: boolean;
+    userId?: string;
+    error?: string;
+    roomIdsRewritten?: boolean;
+    results: Array<{ input: string; roomId: string | null; via: string | null; ok: boolean; eventId?: string; error: string | null }>;
+  }> => ipcRenderer.invoke('matrix:sendTest', req ?? {}),
 
   // ─── Slack integration (Slack message → Michael's queue) ─────────────────────
   /** Register a listener for inbound Slack messages; returns an unsubscribe fn.
