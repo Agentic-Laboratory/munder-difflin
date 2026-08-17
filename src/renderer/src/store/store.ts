@@ -748,13 +748,12 @@ export const useStore = create<State>((set) => ({
         return s;
       }
       // ONE PENDING INBOX-WAKE PER AGENT, same reasoning as compact above. The
-      // poller that queues this text re-checks the inbox every 4s but only
-      // dedupes against the newest message id it already nudged for — it does
-      // not know whether an EARLIER nudge is still sitting undelivered. Without
-      // this, a message that arrives and is fully handled (e.g. via the Stop
-      // hook's own drain) before the queued nudge reaches the front of the
-      // per-agent drain can leave a backlog of stale wakes that fire one by one
-      // against an inbox that has been empty for a while.
+      // poller (useHive's inboxNudge.ts) already checks its OWN queue before
+      // deciding to nudge again, but it's a setInterval(async ...) with nothing
+      // stopping two overlapping ticks from both reading "not pending" and both
+      // enqueueing. This guard is the layer that still catches that case: it
+      // sits at insertion, for any caller, regardless of what the decide-side
+      // check saw.
       if (trimmed === HIVE_INBOX_WAKE_TEXT && queued.some((m) => m.text === HIVE_INBOX_WAKE_TEXT)) {
         return s;
       }
