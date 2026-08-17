@@ -1801,7 +1801,23 @@ async function startMatrixClient(): Promise<{ ok: boolean; userId?: string; erro
     return { ok: false, error };
   }
 
-  stopMatrixClient();
+  // Only the /sync client gets replaced here — NOT the done-observer. This
+  // function re-runs on every Matrix config save (and again on every failed
+  // retry, via reconcileMatrixClient), so tearing down the full listener here
+  // would reseed matrixDoneBaseline on every single one of those calls,
+  // briefly reopening a window where a card that finished 'done' right at that
+  // instant gets swept into the fresh baseline and never replied to. Leaving
+  // the observer's timer alone lets its own idempotent-restart guard hold
+  // across repeated calls here — baseline/notified state only resets on a
+  // genuine stop (Matrix disabled, quit, reset), not on every reconcile.
+  stopMatrixSyncClient();
+  // Outbound done-summaries only need credentials — already confirmed above —
+  // never anything from /sync. Start the observer HERE, before the inbound
+  // preflight below, so an encrypted/unjoined room or a homeserver hiccup in
+  // client.start() can't silently take the reply path down with it too. Watches
+  // the kanban for Matrix-origin cards reaching 'done'; OUTBOUND-only, never
+  // touches ingestion.
+  startMatrixDoneObserver();
   const client = new MatrixClient({
     homeserverUrl: creds.homeserverUrl,
     accessToken: creds.accessToken,
@@ -1849,19 +1865,29 @@ async function startMatrixClient(): Promise<{ ok: boolean; userId?: string; erro
       'integration token so the two agree.'
     );
   }
-  // Watch the kanban for Matrix-origin cards reaching 'done'. OUTBOUND-only;
-  // never touches ingestion, and safe to run even if /sync later goes fatal.
-  startMatrixDoneObserver();
+  // The done-observer is already running by this point (started above,
+  // decoupled from this inbound preflight) — nothing more to do for it here.
   analytics.trackFeature('matrix_trigger');
   return res;
 }
 
-/** Stop and forget the Matrix listener (+ done-observer). Best-effort; safe to
- *  call when not running. The persisted next_batch is deliberately KEPT so a
- *  restart resumes where it left off instead of replaying or skipping. */
-function stopMatrixClient(): void {
+/** Stop and forget only the /sync client — NOT the done-observer, which has an
+ *  independent lifecycle (see startMatrixClient()'s use of this instead of the
+ *  full stopMatrixClient() when merely replacing a running instance). The
+ *  persisted next_batch is deliberately KEPT so a restart resumes where it
+ *  left off instead of replaying or skipping. */
+function stopMatrixSyncClient(): void {
   try { matrixClient?.stop(); } catch (e) { console.error('[matrix] stop failed:', e); }
   matrixClient = null;
+}
+
+/** Stop and forget the Matrix listener (+ done-observer). Best-effort; safe to
+ *  call when not running. Use this for genuine stops (Matrix disabled, quit,
+ *  reset) — startMatrixClient() uses the narrower stopMatrixSyncClient()
+ *  instead when it's just replacing a running instance, so the done-observer's
+ *  baseline isn't reseeded on every reconcile. */
+function stopMatrixClient(): void {
+  stopMatrixSyncClient();
   stopMatrixDoneObserver();
 }
 
