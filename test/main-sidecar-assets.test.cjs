@@ -24,16 +24,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const loadTs = require('./load-ts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const assets = require('../tools/main-sidecar-assets.cjs');
 
 test('every .cjs sidecar require()d at runtime by src/main is registered for copying', () => {
   const mainDir = path.join(ROOT, 'src/main');
-  const requireRe = /require\(\s*['"]\.\/([a-zA-Z0-9_-]+\.cjs)['"]\s*\)/g;
+  // Matches './name.cjs' AND any '../' depth (e.g. '../shared/name.cjs'), not just
+  // a single './' — src/main is flat today so this never bit, but the scan
+  // shouldn't silently miss a sidecar the moment a subdirectory shows up.
+  const requireRe = /require\(\s*['"](?:\.\.?\/)+([a-zA-Z0-9_-]+\.cjs)['"]\s*\)/g;
   const required = new Set();
-  for (const file of fs.readdirSync(mainDir)) {
+  // recursive: true so a sidecar required from a future src/main subdirectory is
+  // still scanned, not silently skipped the way a plain readdirSync would.
+  for (const file of fs.readdirSync(mainDir, { recursive: true })) {
     if (!file.endsWith('.ts')) continue;
     const src = fs.readFileSync(path.join(mainDir, file), 'utf8');
     let m;
@@ -61,15 +68,58 @@ test('matrix-trigger.cjs is registered (regression for the dev-mode Matrix liste
   assert.equal(entry[1], 'out/main/matrix-trigger.cjs');
 });
 
-test('electron.vite.config.ts and copy-main-assets.cjs both consume the shared list, not their own inline copy', () => {
-  const configSrc = fs.readFileSync(path.join(ROOT, 'electron.vite.config.ts'), 'utf8');
+test('copy-main-assets.cjs consumes the shared list, not its own inline copy', () => {
   const copyScriptSrc = fs.readFileSync(path.join(ROOT, 'tools/copy-main-assets.cjs'), 'utf8');
-  assert.match(
-    configSrc, /main-sidecar-assets(\.cjs)?/,
-    'electron.vite.config.ts must import tools/main-sidecar-assets.cjs rather than maintaining its own inline list'
-  );
   assert.match(
     copyScriptSrc, /main-sidecar-assets\.cjs/,
     'tools/copy-main-assets.cjs must require tools/main-sidecar-assets.cjs rather than maintaining its own inline list'
   );
+});
+
+// electron.vite.config.ts's copyMainSidecars plugin previously had this covered
+// by `assert.match(configSrc, /main-sidecar-assets(\.cjs)?/)` — a bare source-text
+// check. electron.vite.config.ts:30 has a COMMENT that also contains the string
+// "main-sidecar-assets", so deleting the real `require('./tools/main-sidecar-
+// assets.cjs')` and hardcoding the array inline again — recreating the exact
+// drift bug this file exists to prevent — left that assertion passing, satisfied
+// by prose instead of by the actual import. A regression test that a comment can
+// satisfy is worse than no test: it reads as coverage.
+//
+// This replaces it with a REFERENCE-IDENTITY check: load the real config (via
+// load-ts.cjs, the same harness every other test in this repo uses for
+// TypeScript-under-node:test) and the shared list SEPARATELY through that same
+// harness — its module cache is keyed by resolved absolute path, so the second
+// load returns the IDENTICAL array object the config's own internal require()
+// produced, not a fresh copy. Swap that shared array's contents for a single
+// fixture entry pointing at real files outside the repo (os.tmpdir(), so the
+// live out/main/ the dev app is running off is never touched) and invoke the
+// plugin's real writeBundle(). Only a plugin that is actually iterating THIS
+// array at call time — not a snapshot, not a hardcoded literal — can produce the
+// fixture copy. No text in the file, comment or otherwise, can make that happen.
+test('copyMainSidecars actually iterates the imported list (reference identity, not text presence)', () => {
+  const configMod = loadTs('electron.vite.config.ts');
+  const plugin = configMod.default.main.plugins.find((p) => p.name === 'copy-main-cjs-sidecars');
+  assert.ok(plugin && typeof plugin.writeBundle === 'function', 'copyMainSidecars plugin not found on the main config');
+
+  // Loaded through the SAME load-ts.cjs cache the config's own internal
+  // require('./tools/main-sidecar-assets.cjs') just populated — this is the
+  // identical array reference the plugin closed over, not a lookalike.
+  const liveAssets = loadTs('tools/main-sidecar-assets.cjs');
+
+  const fakeSrc = path.join(os.tmpdir(), `sidecar-identity-fixture-${process.pid}.cjs`);
+  const fakeDest = path.join(os.tmpdir(), `sidecar-identity-copy-${process.pid}.cjs`);
+  fs.writeFileSync(fakeSrc, 'module.exports = 1;\n');
+  const original = liveAssets.splice(0, liveAssets.length, [fakeSrc, fakeDest]);
+  try {
+    plugin.writeBundle();
+    assert.ok(
+      fs.existsSync(fakeDest),
+      'copyMainSidecars did not copy the fixture entry after the shared assets array was mutated in place — ' +
+      'it must be closing over a stale copy or a hardcoded list rather than the live tools/main-sidecar-assets.cjs import'
+    );
+  } finally {
+    liveAssets.splice(0, liveAssets.length, ...original);
+    fs.rmSync(fakeSrc, { force: true });
+    fs.rmSync(fakeDest, { force: true });
+  }
 });
