@@ -1156,6 +1156,55 @@ export async function resolveMatrixRooms(
   return { ok: true, joined, resolutions };
 }
 
+// ── matrix:sendTest decision logic ──────────────────────────────────────────
+//
+// Pulled out of the ipcMain handler in src/main/index.ts so it can be unit
+// tested directly: index.ts imports 'electron' at module scope, so nothing
+// there is loadable under node:test the way this file is (see test/matrix.test.cjs).
+
+export type MatrixIdentityCheck =
+  | { ok: true; userId: string }
+  | { ok: false; userId?: string; error: string };
+
+/**
+ * Whether the stored token's real account (from whoami) matches what Settings
+ * claims it is, and the exact refusal text when it does not. A mismatch means
+ * the bot would answer its own messages under a different identity than the
+ * human believes they configured — refusing to send is the point, not the
+ * wording, but the wording is what a human actually reads.
+ */
+export function checkMatrixIdentity(
+  who: { ok: true; userId: string } | { ok: false; error: string },
+  configuredUserId: string | undefined
+): MatrixIdentityCheck {
+  if (!who.ok) return { ok: false, error: `the stored access token was rejected: ${who.error}` };
+  const configuredUser = configuredUserId?.trim();
+  if (configuredUser && configuredUser !== who.userId) {
+    return {
+      ok: false,
+      userId: who.userId,
+      error:
+        `the stored token belongs to ${who.userId}, but Settings says ${configuredUser}. ` +
+        'Nothing was sent — a mismatch makes the bot answer its own messages. Fix one of the two and test again.'
+    };
+  }
+  return { ok: true, userId: who.userId };
+}
+
+/**
+ * Whether resolving names/aliases to real room ids actually changed the set
+ * worth persisting. A write triggers `reconcileMatrixClient()`, which restarts
+ * the /sync listener — so this must be false on a no-op resolution, or every
+ * "send test message" click would bounce the listener for nothing.
+ */
+export function computeRoomIdsRewrite(
+  resolutions: readonly MatrixRoomResolution[],
+  storedEntries: readonly string[]
+): { rewritten: string[]; changed: boolean } {
+  const rewritten = resolutions.map((r) => r.roomId ?? r.input);
+  return { rewritten, changed: JSON.stringify(rewritten) !== JSON.stringify(storedEntries) };
+}
+
 // ── Wire shapes + helpers ───────────────────────────────────────────────────
 
 /** The subset of a Matrix event this module reads. */

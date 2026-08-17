@@ -35,7 +35,7 @@ import { listIssues, listCIRuns } from './github';
 import { SlackWebhookServer, SlackReplyServer, postSlackReply, type SlackEventFile } from './slack';
 import {
   MatrixClient, sendMatrixMessage, createFileSyncTokenStore,
-  matrixWhoami, resolveMatrixRooms
+  matrixWhoami, resolveMatrixRooms, checkMatrixIdentity, computeRoomIdsRewrite
 } from './matrix';
 import {
   WebhookServer,
@@ -3888,34 +3888,23 @@ ipcMain.handle('matrix:sendTest', async (_evt, payload: unknown) => {
   //    and the bot replies to itself forever on the user's homeserver. That is
   //    outward-facing and unattended, so it is a refusal, not a warning.
   const who = await matrixWhoami(creds);
-  if (!who.ok) return { ok: false, error: `the stored access token was rejected: ${who.error}`, results: [] };
-  const configuredUser = cfg.matrixUserId?.trim();
-  if (configuredUser && configuredUser !== who.userId) {
-    return {
-      ok: false,
-      userId: who.userId,
-      error:
-        `the stored token belongs to ${who.userId}, but Settings says ${configuredUser}. ` +
-        'Nothing was sent — a mismatch makes the bot answer its own messages. Fix one of the two and test again.',
-      results: []
-    };
-  }
+  const identity = checkMatrixIdentity(who, cfg.matrixUserId);
+  if (!identity.ok) return { ok: false, userId: identity.userId, error: identity.error, results: [] };
 
   // 2. Resolve whatever was typed into ids the /sync filter can match.
   const entries = Array.isArray(cfg.matrixRoomIds) ? cfg.matrixRoomIds : [];
   if (entries.filter((e) => typeof e === 'string' && e.trim()).length === 0) {
-    return { ok: false, userId: who.userId, error: 'no rooms are configured in Settings → Matrix', results: [] };
+    return { ok: false, userId: identity.userId, error: 'no rooms are configured in Settings → Matrix', results: [] };
   }
   const resolved = await resolveMatrixRooms(creds, entries);
-  if (!resolved.ok) return { ok: false, userId: who.userId, error: resolved.error, results: [] };
+  if (!resolved.ok) return { ok: false, userId: identity.userId, error: resolved.error, results: [] };
 
   // 3. WRITE THE RESOLVED IDS BACK. Resolving only inside this handler would fix
   //    the send and leave the listener deaf: the room filter is an exact-match
   //    Set built from these raw config strings, so a display name that posts
   //    fine still matches no /sync key and the reply never arrives. `matrixRoomIds`
   //    is in the `touchesMatrix` key list above, so this reconciles the listener.
-  const rewritten = resolved.resolutions.map((r) => r.roomId ?? r.input);
-  const roomIdsRewritten = JSON.stringify(rewritten) !== JSON.stringify(entries);
+  const { rewritten, changed: roomIdsRewritten } = computeRoomIdsRewrite(resolved.resolutions, entries);
   if (roomIdsRewritten) {
     writeConfig({ matrixRoomIds: rewritten });
     reconcileMatrixClient();
@@ -3944,7 +3933,7 @@ ipcMain.handle('matrix:sendTest', async (_evt, payload: unknown) => {
     });
   }
 
-  return { ok: results.some((r) => r.ok), userId: who.userId, roomIdsRewritten, results };
+  return { ok: results.some((r) => r.ok), userId: identity.userId, roomIdsRewritten, results };
 });
 
 // ─── IPC: Slack integration ─────────────────────────────────────────────────

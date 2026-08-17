@@ -31,7 +31,9 @@ const {
   createMemorySyncTokenStore,
   matrixWhoami,
   listJoinedRooms,
-  resolveMatrixRooms
+  resolveMatrixRooms,
+  checkMatrixIdentity,
+  computeRoomIdsRewrite
 } = loadTs('src/main/matrix.ts');
 
 const HS = 'https://matrix.example.org';
@@ -837,4 +839,91 @@ test('mixed entries each resolve independently and blanks are dropped', async ()
 test('a failed joined_rooms call fails the whole resolution instead of reporting no rooms', async () => {
   const r = await resolveMatrixRooms(ctx(async () => jsonRes(500, { errcode: 'M_UNKNOWN' })), ['Agent Chat']);
   assert.equal(r.ok, false, 'an empty room list from a broken call would read as "no such room" and mislead');
+});
+
+// ── matrix:sendTest decision logic ──────────────────────────────────────────
+//
+// The ipcMain handler in src/main/index.ts (matrix:sendTest) had ZERO test
+// coverage before this: index.ts imports 'electron' at module scope, so it
+// cannot be loaded under node:test the way this file loads matrix.ts. Only the
+// pure helpers the handler calls (whoami, resolveMatrixRooms) were ever
+// exercised — the handler's OWN decisions (refuse-on-mismatch and its exact
+// wording, and whether a room resolution is worth writing back to config) were
+// never tested. checkMatrixIdentity() and computeRoomIdsRewrite() are that
+// decision logic, pulled out of the handler into this file so it is testable.
+
+test('checkMatrixIdentity passes through a whoami failure verbatim', () => {
+  const r = checkMatrixIdentity({ ok: false, error: 'M_UNKNOWN_TOKEN: bad token' }, '@dwight:example.org');
+  assert.equal(r.ok, false);
+  assert.equal(r.userId, undefined, 'no account is known yet — nothing to report');
+  assert.match(r.error, /stored access token was rejected/);
+  assert.match(r.error, /bad token/);
+});
+
+test('checkMatrixIdentity refuses on a declared-vs-actual mismatch, naming both accounts', () => {
+  const r = checkMatrixIdentity({ ok: true, userId: BOT }, HUMAN);
+  assert.equal(r.ok, false);
+  assert.equal(r.userId, BOT, 'the real account is still reported so the caller can show it');
+  assert.match(r.error, new RegExp(BOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(r.error, new RegExp(HUMAN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(r.error, /answer its own messages/, 'the consequence, not just the fact, must reach the human');
+});
+
+test('checkMatrixIdentity passes when the declared user id is unset — nothing to cross-check', () => {
+  const r = checkMatrixIdentity({ ok: true, userId: BOT }, undefined);
+  assert.equal(r.ok, true);
+  assert.equal(r.userId, BOT);
+});
+
+test('checkMatrixIdentity passes when the declared user id matches, whitespace and all', () => {
+  const r = checkMatrixIdentity({ ok: true, userId: BOT }, `  ${BOT}  `);
+  assert.equal(r.ok, true);
+  assert.equal(r.userId, BOT);
+});
+
+test('checkMatrixIdentity does not fabricate a mismatch refusal from an empty string', () => {
+  const r = checkMatrixIdentity({ ok: true, userId: BOT }, '   ');
+  assert.equal(r.ok, true, 'a blank field is "unset", not "declared as blank"');
+});
+
+test('computeRoomIdsRewrite is unchanged when every entry already resolved to itself', () => {
+  const stored = [ROOM, '!two:example.org'];
+  const resolutions = [
+    { input: ROOM, roomId: ROOM, via: 'id', error: null },
+    { input: '!two:example.org', roomId: '!two:example.org', via: 'id', error: null }
+  ];
+  const r = computeRoomIdsRewrite(resolutions, stored);
+  assert.equal(r.changed, false, 'a no-op resolution must not trigger reconcileMatrixClient() on every click');
+  assert.deepEqual(r.rewritten, stored);
+});
+
+test('computeRoomIdsRewrite fires when a display name resolved to a real id', () => {
+  const stored = ['Agent Chat'];
+  const resolutions = [{ input: 'Agent Chat', roomId: ROOM, via: 'name', error: null }];
+  const r = computeRoomIdsRewrite(resolutions, stored);
+  assert.equal(r.changed, true);
+  assert.deepEqual(r.rewritten, [ROOM]);
+});
+
+test('computeRoomIdsRewrite falls back to the original text for an entry that failed to resolve', () => {
+  const stored = ['Typo Chat'];
+  const resolutions = [{ input: 'Typo Chat', roomId: null, via: null, error: 'no joined room is named "Typo Chat"' }];
+  const r = computeRoomIdsRewrite(resolutions, stored);
+  assert.deepEqual(r.rewritten, ['Typo Chat'], 'an unresolved entry writes back its own input, not a null/blank');
+  // `changed` is a whole-array comparison, not per-entry — it happens to be
+  // false here only because the array's single position is unchanged. The
+  // next test shows an unresolved entry sitting in an array that DOES change.
+  assert.equal(r.changed, false);
+});
+
+test('computeRoomIdsRewrite handles a mix of resolved, unresolved and untouched entries', () => {
+  const stored = ['Agent Chat', 'Typo Chat', ROOM];
+  const resolutions = [
+    { input: 'Agent Chat', roomId: ROOM, via: 'name', error: null },
+    { input: 'Typo Chat', roomId: null, via: null, error: 'not found' },
+    { input: ROOM, roomId: ROOM, via: 'id', error: null }
+  ];
+  const r = computeRoomIdsRewrite(resolutions, stored);
+  assert.equal(r.changed, true, 'the first entry alone changing is enough to trigger a write for the whole array');
+  assert.deepEqual(r.rewritten, [ROOM, 'Typo Chat', ROOM], 'Typo Chat still writes back verbatim, unresolved');
 });
