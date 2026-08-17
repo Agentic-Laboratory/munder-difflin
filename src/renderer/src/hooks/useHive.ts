@@ -24,7 +24,7 @@ import { DEFAULT_CONTEXT_TRIGGER, type ContextRule } from '../../../shared/trigg
 import type { AgentProvider } from '../../../shared/agentProvider';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
 import { deliverWithAcknowledgement } from './queueDelivery';
-import { INBOX_NUDGE_TEXT, nudgeDecision, type NudgeState } from './inboxNudge';
+import { INBOX_NUDGE_TEXT, nudgeDecision, shouldSuppressStaleNudge, type NudgeState } from './inboxNudge';
 import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 
 const GOD_ID = 'god';
@@ -712,8 +712,21 @@ export function useHive(config: HarnessConfig | null): void {
       const flightKey = `${srcId}:${next.id}`;
       if (inFlight.has(flightKey)) return { sent: false };
       inFlight.add(flightKey);
-      lastFlush.current[target.id] = now;
       try {
+        // Live re-check, immediately before the write: a wake nudge decided-upon
+        // minutes ago (delivery is idle-gated) can go stale if the agent drained
+        // its own inbox in the meantime through its own autonomous check, not
+        // through either wake path. `nudgeDecision` only stops FUTURE polls once
+        // it next sees empty — it can't retract what's already queued. This is
+        // the only place that can, and it's the last moment before the PTY write.
+        if (next.text === INBOX_NUDGE_TEXT) {
+          const liveInboxSize = await window.cth.hiveInbox(srcId).then((i) => i.length, () => null);
+          if (shouldSuppressStaleNudge(next.text, liveInboxSize)) {
+            removeQueuedMessage(srcId, next.id);
+            return { sent: false };
+          }
+        }
+        lastFlush.current[target.id] = now;
         const sent = await deliverWithAcknowledgement(
           // `instruction` (when present) is the authoritative text to type into
           // the PTY; UI/card surfaces continue to show the readable `text`.

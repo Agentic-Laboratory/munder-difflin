@@ -121,3 +121,22 @@ export function nudgeDecision(
   // comes back later is fresh again.
   return { nudge: false, state: { seen: ids, attempts, lastAt: prev ? prev.lastAt : now } };
 }
+
+/**
+ * A nudge can sit queued for a long time — delivery is idle-gated, and the
+ * agent can go idle minutes after the poll decided to queue it. If the agent
+ * drains its own inbox autonomously in that gap (its own protocol has it check
+ * on every task, independent of either wake path), the queued nudge is now
+ * telling it something false. `nudgeDecision` only stops FUTURE decisions once
+ * it next sees an empty inbox — it can't retract a nudge already sitting in the
+ * queue. This is that second check, applied at the send boundary instead of
+ * the decide boundary, using the same predicate: live inbox membership.
+ *
+ * `liveInboxSize` is `null` when the re-check itself couldn't be performed
+ * (e.g. the IPC call failed) — that must never suppress a real delivery, so
+ * only a confirmed `0` counts. Non-nudge queue items (compact, Slack/Matrix
+ * relays, manual sends) are never subject to this at all.
+ */
+export function shouldSuppressStaleNudge(text: string, liveInboxSize: number | null): boolean {
+  return text === INBOX_NUDGE_TEXT && liveInboxSize === 0;
+}
