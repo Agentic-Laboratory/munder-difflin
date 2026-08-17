@@ -969,9 +969,12 @@ export const sendMessage = sendMatrixMessage;
 // typed, and two of those strings are checked by nobody until the bot is live:
 //
 //   1. The access token is stored against a `matrixUserId` that nothing has
-//      verified it belongs to. `matrix-trigger.cjs` (note 4) suppresses echoes
-//      by comparing `sender === ownUserId`, so a token for a DIFFERENT account
-//      fails open: the bot answers its own messages forever, unattended.
+//      verified it belongs to. This is a stale-settings-text problem, not a
+//      safety one: echo suppression (`ownUserId` at :306/:393, consumed at
+//      :809) is read fresh from the token's own `whoami()`, never from this
+//      config field, so it stays correct even when the two disagree. What
+//      breaks is the human's mental model — Settings goes on showing a
+//      username the token doesn't actually belong to, with nothing to say so.
 //   2. `matrixRoomIds` is used raw as an exact-match Set against the `/sync`
 //      room keys (see the MatrixClient constructor) — and `/sync` keys are
 //      always `!id:server`. A room's display name or alias silently matches
