@@ -1,5 +1,12 @@
 import { useEffect, useRef } from 'react';
-import { useStore, type Agent, type QueuedMessage, type StationKind, type ToolKind } from '@/store/store';
+import {
+  useStore,
+  HIVE_INBOX_WAKE_TEXT,
+  type Agent,
+  type QueuedMessage,
+  type StationKind,
+  type ToolKind
+} from '@/store/store';
 import {
   buildSpawnCommand,
   ASSISTANT_MODEL,
@@ -609,10 +616,7 @@ export function useHive(config: HarnessConfig | null): void {
             ? inbox.map((m) => m.id).sort().slice(-1)[0]
             : '';
           if (newest && nudged.current[a.id] !== newest) {
-            useStore.getState().enqueueMessage(
-              a.id,
-              'You have new hive inbox message(s) — read your inbox, act on them now, and move handled ones to inbox/.done/. Act autonomously; only message god if you genuinely need a decision.'
-            );
+            useStore.getState().enqueueMessage(a.id, HIVE_INBOX_WAKE_TEXT);
             nudged.current[a.id] = newest;
           } else if (!newest) {
             nudged.current[a.id] = '';

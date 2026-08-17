@@ -124,6 +124,14 @@ export interface QueuedMessage {
   manual?: boolean;
 }
 
+/** The generic "go read your inbox" nudge useHive's poller queues on arrival
+ *  (see useHive's inbox-poll effect). Content-free and idempotent — like
+ *  `/compact`, a second copy queued before the first is delivered tells the
+ *  agent nothing the first didn't, so `enqueueMessage` caps it at one
+ *  pending copy per agent rather than let a backlog of stale wakes build up. */
+export const HIVE_INBOX_WAKE_TEXT =
+  'You have new hive inbox message(s) — read your inbox, act on them now, and move handled ones to inbox/.done/. Act autonomously; only message god if you genuinely need a decision.';
+
 // 'files' retired in v0.3.4 (the per-agent IDE button superseded it) — a
 // persisted 'files' selection falls back to 'terminal' on load. 'git' added in
 // v0.3.4: at-a-glance branch/status/log without opening the IDE.
@@ -737,6 +745,17 @@ export const useStore = create<State>((set) => ({
       // cheap defence in depth, but this is the one that cannot be routed around.
       const queued = s.messageQueues[agentId] ?? [];
       if (isCompactionCommand(trimmed) && queued.some((m) => isCompactionCommand(m.text))) {
+        return s;
+      }
+      // ONE PENDING INBOX-WAKE PER AGENT, same reasoning as compact above. The
+      // poller that queues this text re-checks the inbox every 4s but only
+      // dedupes against the newest message id it already nudged for — it does
+      // not know whether an EARLIER nudge is still sitting undelivered. Without
+      // this, a message that arrives and is fully handled (e.g. via the Stop
+      // hook's own drain) before the queued nudge reaches the front of the
+      // per-agent drain can leave a backlog of stale wakes that fire one by one
+      // against an inbox that has been empty for a while.
+      if (trimmed === HIVE_INBOX_WAKE_TEXT && queued.some((m) => m.text === HIVE_INBOX_WAKE_TEXT)) {
         return s;
       }
       const msg: QueuedMessage = {
