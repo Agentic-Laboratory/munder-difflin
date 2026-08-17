@@ -1690,9 +1690,17 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             disabled={matrixBusy}
                             onClick={() => { void saveMatrix(!matrixEnabled); }}
                           >
-                            {matrixEnabled ? 'on' : 'off'}
+                            {matrixEnabled ? 'on' : 'paused'}
                           </PixelButton>
                         </div>
+
+                        {!matrixEnabled && (
+                          <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                            Paused, not revoked — the bot stops listening and replying, but the stored homeserver
+                            token stays available to workers through the integration record; disable it under
+                            Connections → Integrations to actually revoke access.
+                          </span>
+                        )}
 
                         {matrixEnabled && (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
