@@ -66,6 +66,7 @@ import { fetchHireManifest, readHireManifestFile } from './hire';
 import { parseHireDeepLink, type HireManifest } from '../shared/hire';
 import { ClosingTimeController } from './closingTime';
 import {
+  argsWithAutoModeFlag,
   inferAgentProvider,
   isClaudeProvider,
   nonInteractiveEnvForProvider,
@@ -239,7 +240,10 @@ const control = new ControlRegistry();
 // lets the transcript fallback find an agent's cwd from the hive registry.
 const telemetry = new TelemetryCollector({
   emit: (channel, payload) => { try { liveWebContents()?.send(channel, payload); } catch { /* window tore down */ } },
-  resolveCwd: (agentId) => hive.registry().agents[agentId]?.cwd ?? null
+  resolveCwd: (agentId) => hive.registry().agents[agentId]?.cwd ?? null,
+  // D11: scopes the transcript fallback to this agent's own session instead of
+  // summing every transcript in a (routinely shared) cwd.
+  resolveSessionId: (agentId) => hive.lastSession(agentId)
 });
 // Usage provider (Seam 1) — the INTEGRATION swap: Oscar's telemetry collector (#7)
 // IS the provider, replacing Lane A's interim StubUsageProvider. Same
@@ -391,6 +395,12 @@ const preservedWorktrees = new Map<string, PreservedWorktree>();
  * error can never crash the caller (an IPC handler or node-pty's onExit).
  */
 function teardownPty(id: string): void {
+  // Main cards an ephemeral worker on the floor when it spawns, so main has to
+  // un-card it too — otherwise a released worker leaves a ghost the renderer's
+  // nudge/drain loops keep polling. Read the flag before the branches below
+  // clear it. Renderer-owned agents are deliberately untouched: the renderer
+  // owns those cards and keeps a dead one so the user can Restart & Continue.
+  const wasWorker = liveWorkers.has(id);
   // 0) Revoke this id's broker capability (if any). Idempotent + harmless for a
   //    non-worker PTY; ensures a dead worker's token can never reach an integration.
   try { integrationBroker.revoke(id); } catch { /* best-effort */ }
@@ -430,6 +440,9 @@ function teardownPty(id: string): void {
   // A worker whose isolation failed (non-repo cwd) has no worktree to gate above —
   // still clear its tracking entry so the controller stops watching a dead PTY.
   if (liveWorkers.has(id)) liveWorkers.delete(id);
+  if (wasWorker) {
+    try { liveWebContents()?.send('hive:agentArchived', { id }); } catch { /* window gone */ }
+  }
   syncKeepAwake();
 }
 
@@ -2869,7 +2882,20 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // in the command string the renderer already built.
   if (opts.hive && claudeProvider) {
     const cfg = readConfig();
-    const args = opts.args ?? [];
+    // Permission posture (D9): only a GUI hire (Add Agent) builds its command
+    // through buildSpawnCommand, which bakes autoMode's bypass flag into the
+    // command STRING before this function ever sees it. A main-only spawn (the
+    // ephemeral-worker watcher, a voice hire) skips that step entirely, so it
+    // previously reached here with neither the flag nor any equivalent — every
+    // other Claude spawn path got the user's autoMode posture and this one
+    // didn't. argsWithAutoModeFlag is idempotent (a GUI spawn's args already has
+    // the flag, so this is a no-op for it) and is the SAME check spawnAgentCore
+    // already applies for opencode/crush et al a few lines below via
+    // HIVE_AUTO_APPROVE — one global toggle, one posture, every spawn path.
+    // Confirmed live: a worker spawned without this flag deadlocked — a
+    // cross-session message to it came back "held for the recipient user's
+    // approval" with no surface for anyone to ever grant that approval.
+    const args = argsWithAutoModeFlag(opts.args ?? [], cfg.autoMode, provider);
     // Model precedence: an explicit per-agent --model (from the renderer) wins;
     // else the user's global defaultModel; else the role-based default tier. The
     // GOD is special-cased: it has its own engine config (godProvider/godModel), so
@@ -3441,7 +3467,11 @@ ipcMain.handle('hive:setArchived', (_evt, id: unknown, archived: unknown) => {
 });
 
 // ─── IPC: semantic memory (MemPalace CLI) ───────────────────────────────────
-ipcMain.handle('hive:memoryStatus', () => { memory.resetBinCache(); return memory.status(); });
+// refresh() = resetBinCache + an idempotent start(). The poll is the one thing
+// that reliably notices mempalace being installed after boot, so it is what arms
+// the mine loop that boot's start() had to skip — otherwise the pill reads
+// "getting ready" until the app is restarted.
+ipcMain.handle('hive:memoryStatus', () => memory.refresh());
 ipcMain.handle('hive:searchMemory', (_evt, query: unknown, wing: unknown) => {
   if (typeof query !== 'string' || !query.trim()) return { ok: false, output: '', error: 'empty query' };
   return memory.search(query, { wing: typeof wing === 'string' ? wing : undefined });
@@ -4585,7 +4615,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
     hive: meta, isolate, provider: raw.provider, env: brokerEnv
   };
 
-  let res: { ok: boolean; error?: string };
+  let res: { ok: boolean; error?: string; worktreePath?: string };
   try {
     // Output routes to the primary window (no renderer evt here). Workers are
     // headless-by-design — they reply to Slack + report to god, not a watching human.
@@ -4594,6 +4624,28 @@ async function processSpawnRequest(filePath: string): Promise<void> {
     res = { ok: false, error: String(e) };
   }
   if (!res.ok) { integrationBroker.revoke(workerId); fail(`spawn failed — ${res.error ?? 'unknown error'}`); return; }
+
+  // Card the worker on the floor. The renderer's roster is renderer-owned and is
+  // only mutated by renderer-initiated hires, so without this broadcast a worker
+  // spawned from a spawn-request is invisible in the GUI — and, far worse, it is
+  // invisible to the renderer loops that actually DRIVE an agent. The objective
+  // below is dispatched through the inbox, and the loop that turns inbox mail
+  // into a terminal nudge (useHive #3) plus the queue drain that types it in
+  // (#4) both iterate the renderer's agent list. An uncarded worker therefore
+  // sat at its prompt with its objective unread — the whole feature was inert.
+  // Same descriptor as the voice-hire path; the renderer's handler is idempotent
+  // and bails on a duplicate id, so this can never double-card an agent.
+  try {
+    liveWebContents()?.send('hive:agentSpawned', {
+      id: workerId,
+      name: meta.name,
+      provider: spawnOpts.provider ?? meta.provider ?? 'claude',
+      cwd: res.worktreePath ?? cwd,
+      command,
+      role: meta.role,
+      worktreePath: res.worktreePath
+    });
+  } catch { /* window torn down — the worker still runs headless */ }
 
   // Register for done-scan / idle-reap / token-cap / safe teardown (pty id == workerId).
   // tokenCap is optional plumbing (default unlimited) — only a positive finite cap is kept.
@@ -4690,8 +4742,21 @@ async function ephemeralWorkerTick(): Promise<void> {
     const defaultTokenCap = typeof cfg.defaultWorkerTokenCap === 'number' && cfg.defaultWorkerTokenCap > 0
       ? cfg.defaultWorkerTokenCap : 0;
 
-    // (1) Finish or reap. ptyManager.kill → teardownPty → gated worktree + archive
-    //     + liveWorkers.delete. `releasing` guards the gap before onExit fires.
+    // (1) Finish or reap. `releasing` guards the gap before teardown lands.
+    // ptyManager.kill(workerId) alone is NOT enough here (D10): kill() deletes
+    // its PTY session from the manager's map SYNCHRONOUSLY, but the process's
+    // real exit — and node-pty's onExit, which is what fires the exitHandler
+    // that calls teardownPty — only arrives ASYNCHRONOUSLY afterward. By the
+    // time it does, the map lookup that onExit uses to detect "was this id
+    // reclaimed by a respawn" already reads empty, so its stale-exit guard
+    // misfires and the exitHandler is skipped every time. Confirmed live: a
+    // reaped worker's process was gone (`ps` had nothing) while registry.json
+    // still read `archived: false` and fleet.json still listed it — which
+    // means the LIVE ROSTER god's own prompt is built from (rosterContext(),
+    // fed by fleet.json) kept instructing "route work to" a dead process,
+    // forever, after every reap. teardownPty is idempotent (guarded on map
+    // presence), so calling it explicitly here is safe even on the rare tick
+    // where the async path does still land.
     for (const [workerId, rec] of [...liveWorkers]) {
       if (rec.releasing) continue;
       if (workerSignaledDone(workerId, rec.spawnedAt)) {
@@ -4699,6 +4764,7 @@ async function ephemeralWorkerTick(): Promise<void> {
         rec.releasing = true;
         console.log(`[worker] ${workerId} signaled done — releasing`);
         ptyManager.kill(workerId);
+        teardownPty(workerId);
         continue;
       }
       // Token-cap reap (default-off plumbing). An effective cap > 0 → reap when the
@@ -4715,6 +4781,7 @@ async function ephemeralWorkerTick(): Promise<void> {
             rec.slack
           );
           ptyManager.kill(workerId);
+          teardownPty(workerId);
           continue;
         }
       }
@@ -4729,6 +4796,7 @@ async function ephemeralWorkerTick(): Promise<void> {
           rec.slack
         );
         ptyManager.kill(workerId);
+        teardownPty(workerId);
       }
     }
 
@@ -4823,8 +4891,13 @@ ipcMain.handle('workers:list', (): { live: WorkerSnapshot[]; preserved: Preserve
 });
 
 /** Manually stop a live ephemeral worker. Mirrors the done-release path: mark
- *  releasing, then kill → teardownPty runs the SAFETY-GATED worktree teardown
- *  (committed work is preserved, never force-discarded). Idempotent. */
+ *  releasing, then kill + teardownPty runs the SAFETY-GATED worktree teardown
+ *  (committed work is preserved, never force-discarded). Idempotent. teardownPty
+ *  is called explicitly (D10) rather than left to the PTY's natural exit: kill()
+ *  frees the manager's id slot synchronously, so by the time the process's real
+ *  exit arrives the exit-handler's stale-id guard already misreads it as a
+ *  reclaimed id and skips teardown — the worker would stay "live" in registry.json
+ *  and fleet.json forever after this call. */
 ipcMain.handle('workers:stop', (_evt, workerId: string): { ok: boolean; error?: string } => {
   if (typeof workerId !== 'string' || !workerId) return { ok: false, error: 'invalid worker id' };
   const rec = liveWorkers.get(workerId);
@@ -4833,6 +4906,7 @@ ipcMain.handle('workers:stop', (_evt, workerId: string): { ok: boolean; error?: 
   rec.releasing = true;
   console.log(`[worker] manual stop requested for ${workerId}`);
   try { ptyManager.kill(workerId); } catch (e) { return { ok: false, error: String(e) }; }
+  teardownPty(workerId);
   return { ok: true };
 });
 

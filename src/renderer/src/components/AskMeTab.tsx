@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { PixelButton } from './PixelButton';
 import { PixelBadge } from './PixelBadge';
 import { useStore } from '@/store/store';
-import { type HiveTask, openQuestion, waitsOnHuman } from './TasksKanban';
+import { type HiveTask, type HumanQA, openQuestion, waitsOnHuman } from './TasksKanban';
+import { patchTaskInLedger } from '../../../shared/taskLedger';
 
 /**
  * ASK ME — first-class human feedback through the task system.
@@ -66,6 +67,34 @@ export function AskMeTab() {
 
   const waiting = tasks.filter(waitsOnHuman);
 
+  /**
+   * Apply `patch` to the OPEN humanQA entry of one card, on the RAW ledger.
+   * Returns whether it landed.
+   *
+   * Re-reads tasks.json first rather than writing this view's 5s-old snapshot,
+   * because `hive:writeTasks` treats the incoming array as the card MEMBERSHIP:
+   * writing our snapshot back would delete any card the god added since the last
+   * poll. Re-locating the open question by its text also means an answer can
+   * never land on a different question the god swapped in underneath us — in
+   * that case nothing is written and the draft is kept.
+   */
+  const patchOpenQuestion = async (
+    taskId: string,
+    question: string,
+    patch: Partial<HumanQA>
+  ): Promise<boolean> => {
+    const raw = (await window.cth.hiveTasks()) as { tasks?: unknown };
+    const list: unknown[] = Array.isArray(raw?.tasks) ? raw.tasks : [];
+    const card = list.find(
+      (t): t is HiveTask => !!t && typeof t === 'object' && (t as HiveTask).id === taskId
+    );
+    const open = card ? openQuestion(card) : undefined;
+    if (!card || !open || open.q !== question) return false;
+    const humanQA = (card.humanQA ?? []).map((e) => (e === open ? { ...e, ...patch } : e));
+    await window.cth.hiveWriteTasks(patchTaskInLedger(list, taskId, { humanQA }) as HiveTask[]);
+    return true;
+  };
+
   const sendAnswer = async (task: HiveTask) => {
     const text = (drafts[task.id] ?? '').trim();
     const open = openQuestion(task);
@@ -73,17 +102,12 @@ export function AskMeTab() {
     setSending(task.id);
     try {
       // 1) Document the answer ON the card.
-      const next = tasks.map((t) => {
-        if (t.id !== task.id) return t;
-        const qa = (t.humanQA ?? []).map((e) =>
-          e === open || (e.q === open.q && !e.a)
-            ? { ...e, a: text, answeredAt: new Date().toISOString() }
-            : e
-        );
-        return { ...t, humanQA: qa };
-      });
-      await window.cth.hiveWriteTasks(next);
-      setTasks(next);
+      if (!(await patchOpenQuestion(task.id, open.q, { a: text, answeredAt: new Date().toISOString() }))) {
+        setSending(null);
+        await refresh(); // the ask moved on — show what the card says now
+        return;
+      }
+      await refresh();
       // 2) Tell the god, so the card gets unblocked and work continues.
       await window.cth.hiveSend({
         to: 'god',
@@ -110,7 +134,8 @@ export function AskMeTab() {
   const dismiss = async (task: HiveTask) => {
     const open = openQuestion(task);
     if (!open || sending === task.id) return;
-    const next = tasks.map((t) => {
+    // Optimistic — the card disappears immediately.
+    setTasks((prev) => prev.map((t) => {
       if (t.id !== task.id) return t;
       const qa = (t.humanQA ?? []).map((e) =>
         e === open || (e.q === open.q && !e.a && !e.dismissedAt)
@@ -118,13 +143,11 @@ export function AskMeTab() {
           : e
       );
       return { ...t, humanQA: qa };
-    });
-    setTasks(next); // optimistic — the card disappears immediately
+    }));
     try {
-      await window.cth.hiveWriteTasks(next);
-    } catch {
-      setTasks(tasks); // restore on failure so the user can retry
-    }
+      await patchOpenQuestion(task.id, open.q, { dismissedAt: new Date().toISOString() });
+    } catch { /* the refresh below restores whatever the ledger actually says */ }
+    await refresh();
   };
 
   return (

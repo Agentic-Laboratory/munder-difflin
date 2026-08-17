@@ -567,6 +567,23 @@ export function autoModeFlagForProvider(provider: AgentProvider): string {
   return providerPreset(provider).autoModeFlag ?? '';
 }
 
+/** Idempotently append a provider's auto-mode flag to an args array, honoring the
+ *  user's global autoMode toggle. The renderer's Add Agent flow bakes this same
+ *  flag into the command STRING before a GUI hire ever reaches the shared spawn
+ *  core (buildSpawnCommand → tokenizeCommand), so `args` for a GUI spawn already
+ *  contains it by the time it gets here — this is a no-op for that path. A
+ *  main-only spawn (an ephemeral worker, a voice hire) never passes through that
+ *  renderer step, so without this it got neither the flag nor any equivalent,
+ *  leaving it in an ask-first posture no one could ever answer. */
+export function argsWithAutoModeFlag(args: string[], autoMode: boolean, provider: AgentProvider): string[] {
+  if (!autoMode) return args;
+  const flag = autoModeFlagForProvider(provider);
+  if (!flag) return args;
+  const tokens = flag.trim().split(/\s+/);
+  if (args.includes(tokens[0])) return args;
+  return [...args, ...tokens];
+}
+
 /** Returns any env vars the provider needs for non-interactive / first-run suppression. */
 export function nonInteractiveEnvForProvider(provider: AgentProvider): Record<string, string> {
   return providerPreset(provider).nonInteractiveEnv ?? {};

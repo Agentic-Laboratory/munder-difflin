@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
 import { TaskDetail, parseTasks, type HiveTask } from './TasksKanban';
+import { patchTaskInLedger } from '../../../shared/taskLedger';
 
 /**
  * App-wide host for the task detail: whoever calls store.openTaskDetail(id) —
@@ -40,10 +41,20 @@ export function TaskDetailOverlay() {
   const nameFor = (id?: string): string | undefined =>
     id ? (agents.find((a) => a.id === id)?.name ?? restorable.find((a) => a.id === id)?.name ?? id) : undefined;
 
+  // Moving a card writes ONE field. Operate on the RAW ledger (the same pattern
+  // as TasksKanban.dismissTask), never on the display-parsed state: parseTasks
+  // NORMALIZES, so re-serializing it turns a hand-written `priority: "high"`
+  // into the number 3 and grafts `dependsOn: []` onto a card that spells the key
+  // `deps`. Those are real values, so they survive the merge in hive.writeTasks
+  // and land on disk — a status change quietly rewriting the god's cards.
   const move = async (status: HiveTask['status']) => {
-    const next = tasks.map((t) => (t.id === task.id ? { ...t, status } : t));
-    setTasks(next); // optimistic
-    try { await window.cth.hiveWriteTasks(next); } catch { void refresh(); }
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status } : t))); // optimistic
+    try {
+      const raw = (await window.cth.hiveTasks()) as { tasks?: unknown };
+      await window.cth.hiveWriteTasks(
+        patchTaskInLedger(raw?.tasks, task.id, { status }) as HiveTask[]
+      );
+    } catch { void refresh(); }
   };
 
   const assign = () => {

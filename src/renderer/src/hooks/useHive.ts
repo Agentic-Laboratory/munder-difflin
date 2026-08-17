@@ -23,7 +23,7 @@ import {
 import { DEFAULT_CONTEXT_TRIGGER, type ContextRule } from '../../../shared/triggers';
 import type { AgentProvider } from '../../../shared/agentProvider';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
-import { deliverWithAcknowledgement } from './queueDelivery';
+import { canDeliverToAgent, deliverWithAcknowledgement } from './queueDelivery';
 import { INBOX_NUDGE_TEXT, nudgeDecision, shouldSuppressStaleNudge, type NudgeState } from './inboxNudge';
 import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 
@@ -296,6 +296,12 @@ export function useHive(config: HarnessConfig | null): void {
   const reviving = useRef<Record<string, number>>({});
   // Reactive so the assistant bootstrap (effect #1b) re-runs once Michael is ready.
   const godStatus = useStore((s) => s.godStatus);
+  // Per-pty `lastOutputAt`, refreshed by the quiescence sweep (#2e) and read by
+  // the queue drain (#4) so it can tell a terminal parked at its prompt from one
+  // mid-turn. Kept here rather than fetched again in #4 — #2e already polls
+  // listPtys on exactly the cadence the drain needs, and one reading keeps the
+  // two loops from disagreeing about whether an agent is quiet.
+  const ptyLastOutput = useRef<Record<string, number>>({});
   // #5C/#7C.4 — latest circuit-breaker level per agent. When 'constrained'/
   // 'stopped' the avatar is pinned to 'looping' and hook events must NOT flip it
   // back to 'working' (the flicker the spec calls out); only a genuine Stop clears it.
@@ -572,9 +578,13 @@ export function useHive(config: HarnessConfig | null): void {
     if (!config?.onboardingComplete) return;
     const iv = setInterval(async () => {
       const ptys = await window.cth.listPtys().catch(() => []);
-      if (!ptys.length) return;
       const lastOut: Record<string, number> = {};
       for (const p of ptys) lastOut[p.id] = p.lastOutputAt;
+      // Publish BEFORE the early return and before the 'working' filter below,
+      // so the drain (#4) also gets a reading for breaker-pinned agents — and so
+      // a vanished PTY clears its entry instead of leaving a stale one.
+      ptyLastOutput.current = lastOut;
+      if (!ptys.length) return;
       const now = Date.now();
       const { agents, updateAgent } = useStore.getState();
       for (const a of agents) {
@@ -681,6 +691,14 @@ export function useHive(config: HarnessConfig | null): void {
     const inFlight = new Set<string>();
     const sendFailures: Record<string, number> = {};
 
+    /** How long this terminal has been silent, or null when we have no reading
+     *  (never polled, PTY gone, or it has emitted nothing at all). canDeliverToAgent
+     *  fails closed on null — unmeasured silence is not evidence of silence. */
+    const ptyQuietMs = (ptyId: string, now: number): number | null => {
+      const last = ptyLastOutput.current[ptyId];
+      return typeof last === 'number' && last > 0 ? now - last : null;
+    };
+
     // Send the front of `srcId`'s queue into `target`'s pty (verbatim or wrapped),
     // gated on the target being idle, free of interactive menus, and off
     // cooldown. The queue item is acknowledged only after BOTH PTY writes
@@ -693,8 +711,14 @@ export function useHive(config: HarnessConfig | null): void {
     ): Promise<{ sent: boolean; message?: QueuedMessage }> => {
       const { messageQueues, removeQueuedMessage } = useStore.getState();
       const next = messageQueues[srcId]?.[0];
-      if (!next || !target?.ptyId || target.status !== 'idle') return { sent: false };
+      if (!next || !target?.ptyId) return { sent: false };
       const now = Date.now();
+      // Idle, or breaker-pinned with a terminal that has genuinely gone quiet.
+      // This gate is a don't-type-mid-stream safety check, so `manual` does NOT
+      // bypass it — "send now" releases the auto-delivery PAUSE below, not this.
+      if (!canDeliverToAgent(target.status, ptyQuietMs(target.ptyId, now), QUIESCE_IDLE_MS)) {
+        return { sent: false };
+      }
       const control = await window.cth.controlSnapshot(target.id);
       // The pause gate holds everything EXCEPT messages the user explicitly
       // released with "send now" (m.manual) — otherwise a paused floor leaves
@@ -842,9 +866,12 @@ export function useHive(config: HarnessConfig | null): void {
     const flush = () => {
       const { agents, messageQueues } = useStore.getState();
       const byId = (id: string) => agents.find((a) => a.id === id);
+      const now = Date.now();
 
       for (const a of agents) {
-        if (!a.ptyId || a.status !== 'idle') continue;
+        // Same gate as dispatch() — this pre-filter runs first, so relaxing only
+        // the one inside dispatch would have changed nothing.
+        if (!a.ptyId || !canDeliverToAgent(a.status, ptyQuietMs(a.ptyId, now), QUIESCE_IDLE_MS)) continue;
         if (!messageQueues[a.id]?.length) continue;
         void dispatch(a.id, a).then(({ sent, message }) => {
           if (sent && message?.slack) void ensureSlackCard(message);

@@ -167,6 +167,29 @@ export class MemoryManager {
     if (this.mineTimer) { clearInterval(this.mineTimer); this.mineTimer = null; }
   }
 
+  /**
+   * Re-resolve the CLI, arm the mine loop if it is only now possible, and report.
+   *
+   * `start()` runs once at boot and bails when mempalace isn't on PATH yet. If the
+   * user installs it AFTER that — the common case, since the settings panel is
+   * where they find out they need it — nothing re-invoked `start()`, so the mine
+   * loop never ran. The palace is created by the first `mempalace mine`, so it
+   * never appeared either, and `initialized` (existsSync(palace)) stayed false
+   * while `available` flipped true: the status pill read "On — getting ready…"
+   * forever and only an app restart cleared it.
+   *
+   * The status poll is the one thing that reliably notices the install, so it is
+   * where the re-arm belongs. `start()` is idempotent (initStarted), so repeated
+   * polls never start a second loop — and it still deliberately does NOT run
+   * `mempalace init`, which ends in an interactive "Mine now? [Y/n]" that `--yes`
+   * doesn't cover and that hangs a spawned child.
+   */
+  refresh(): MemoryStatus {
+    this.resetBinCache();
+    this.start();
+    return this.status();
+  }
+
   private startMineLoop(): void {
     if (this.mineTimer) return;
     this.mineNow();
