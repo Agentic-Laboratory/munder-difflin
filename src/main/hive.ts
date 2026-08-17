@@ -456,27 +456,43 @@ export class HiveManager {
 
   // — bootstrap —
 
-  /** Create the hive skeleton + git repo if missing. Idempotent. */
+  /** Create the hive skeleton + git repo if missing. Idempotent.
+   *
+   *  Runs on EVERY agent spawn (via ensureAgent), so "file missing" is not a
+   *  rare bootstrap-only signal — it can also mean a hive that has run for
+   *  days just had a live file vanish out from under it (D16: a stray
+   *  root-level move of tasks.json got swept into an unrelated routing
+   *  commit; the very next registration's ensureHive() saw the file gone and
+   *  silently reinitialized it to `{tasks:[]}`, discarding 27 real cards).
+   *  `isFreshHive` — decided up front, before any guard runs — is what lets
+   *  the guards tell "never existed" from "existed, then vanished": only on
+   *  a genuinely new hive (no `.git` yet) is a missing tracked file safe to
+   *  default. On an existing hive it goes through ensureTrackedFile, which
+   *  tries to recover the last-known-good content from git history first. */
   ensureHive(): void {
     const root = this.root();
     if (!root) return;
     mkdirSync(join(root, 'agents'), { recursive: true });
 
+    const isFreshHive = !existsSync(join(root, '.git'));
+
     const protocol = join(root, 'PROTOCOL.md');
     if (!existsSync(protocol)) writeFileSync(protocol, PROTOCOL_MD, 'utf8');
 
-    const registry = join(root, 'registry.json');
-    if (!existsSync(registry)) {
-      this.writeJson(registry, { godId: null, agents: {} } as Registry);
-    }
-    const board = join(root, 'board.md');
-    if (!existsSync(board)) {
-      writeFileSync(board, '# Hive board\n\n_Shared plans live here. The god agent is the scribe._\n', 'utf8');
-    }
-    const tasks = join(root, 'tasks.json');
-    if (!existsSync(tasks)) this.writeJson(tasks, { tasks: [] });
-    const log = join(root, 'log.jsonl');
-    if (!existsSync(log)) writeFileSync(log, '', 'utf8');
+    // log.jsonl MUST recover (or default) FIRST: every other branch below logs
+    // its own outcome via appendLog(), and appendLog uses appendFileSync — which
+    // creates log.jsonl on first write. If log.jsonl were also missing and this
+    // ran after registry/board/tasks, that incidental create would make its own
+    // ensureTrackedFile call below see the file already present and skip
+    // recovering its real history, silently losing the audit trail this whole
+    // fix exists to make loud.
+    this.ensureTrackedFile(root, 'log.jsonl', isFreshHive, '');
+    this.ensureTrackedFile(root, 'registry.json', isFreshHive,
+      JSON.stringify({ godId: null, agents: {} } as Registry, null, 2));
+    this.ensureTrackedFile(root, 'board.md', isFreshHive,
+      '# Hive board\n\n_Shared plans live here. The god agent is the scribe._\n');
+    this.ensureTrackedFile(root, 'tasks.json', isFreshHive,
+      JSON.stringify({ tasks: [] }, null, 2));
 
     // The Claude Code command reference Michael consults (refreshed each bootstrap
     // so it tracks the bundled list).
@@ -502,10 +518,49 @@ export class HiveManager {
     // …and the PATH-visible `node` fallback for the agent's OWN subprocesses.
     this.writeRuntimeShims();
 
-    if (!existsSync(join(root, '.git'))) {
+    if (isFreshHive) {
       this.git(['init', '-q'], root);
       this.commit('hive: init');
     }
+  }
+
+  /** Idempotent default-if-missing for a tracked hive state file, but only
+   *  blind-default on a genuinely fresh hive. On an existing hive (`.git`
+   *  already present) a missing file instead tries to recover the last
+   *  committed content first — see ensureHive's doc comment for why this
+   *  distinction is the actual fix, not the default-write itself. Logs either
+   *  outcome so a recovery (or a recovery failure) is never silent. */
+  private ensureTrackedFile(root: string, relPath: string, isFreshHive: boolean, defaultContent: string): void {
+    const p = join(root, relPath);
+    if (existsSync(p)) return;
+    if (!isFreshHive) {
+      const recovered = this.recoverFromGit(root, relPath);
+      if (recovered !== null) {
+        writeFileSync(p, recovered, 'utf8');
+        this.appendLog({ kind: 'recovered-missing-file', path: relPath });
+        return;
+      }
+      this.appendLog({ kind: 'missing-file-recovery-failed', path: relPath });
+    }
+    writeFileSync(p, defaultContent, 'utf8');
+  }
+
+  /** Last-known-good content for `relPath`, newest-first through the commits
+   *  that touched it. Tries each commit's OWN tree first, then that commit's
+   *  parent — covering the common case where the newest touching commit IS
+   *  the one that removed the file (its parent is the last commit that still
+   *  had it). Returns null if the path has no recoverable history. */
+  private recoverFromGit(root: string, relPath: string): string | null {
+    const log = this.git(['log', '--format=%H', '--', relPath], root);
+    if (!log.ok) return null;
+    const hashes = log.out.split('\n').map((s) => s.trim()).filter(Boolean);
+    for (const hash of hashes) {
+      const atCommit = this.git(['show', `${hash}:${relPath}`], root);
+      if (atCommit.ok && atCommit.out.length > 0) return atCommit.out;
+      const atParent = this.git(['show', `${hash}^:${relPath}`], root);
+      if (atParent.ok && atParent.out.length > 0) return atParent.out;
+    }
+    return null;
   }
 
   /** Validate an agent's cwd the way a spawn does — it must be an ABSOLUTE path
