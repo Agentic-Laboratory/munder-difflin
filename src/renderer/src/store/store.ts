@@ -7,6 +7,7 @@ import type { AgentProvider } from '@shared/agentProvider';
 import type { HireManifest } from '@shared/hire';
 import { DEFAULT_ORG_TRIGGER, type OrgTriggerConfig, type WebhookTrigger } from '@shared/triggers';
 import { isCompactionCommand } from '@shared/providerAutomation';
+import { INBOX_NUDGE_TEXT } from '@/hooks/inboxNudge';
 
 export type ToolKind =
   | 'Read' | 'Edit' | 'Write' | 'Bash' | 'WebFetch' | 'WebSearch'
@@ -128,9 +129,13 @@ export interface QueuedMessage {
  *  (see useHive's inbox-poll effect). Content-free and idempotent — like
  *  `/compact`, a second copy queued before the first is delivered tells the
  *  agent nothing the first didn't, so `enqueueMessage` caps it at one
- *  pending copy per agent rather than let a backlog of stale wakes build up. */
-export const HIVE_INBOX_WAKE_TEXT =
-  'You have new hive inbox message(s) — read your inbox, act on them now, and move handled ones to inbox/.done/. Act autonomously; only message god if you genuinely need a decision.';
+ *  pending copy per agent rather than let a backlog of stale wakes build up.
+ *  Aliased to inboxNudge.ts's constant (not a second literal) so the two can
+ *  never drift apart the way HIVE_INBOX_WAKE_TEXT and INBOX_NUDGE_TEXT once
+ *  silently did — this file's guard below and the poller's own pending-check
+ *  are comparing the SAME string by construction, not by two humans copying
+ *  it correctly twice. */
+export const HIVE_INBOX_WAKE_TEXT = INBOX_NUDGE_TEXT;
 
 // 'files' retired in v0.3.4 (the per-agent IDE button superseded it) — a
 // persisted 'files' selection falls back to 'terminal' on load. 'git' added in
