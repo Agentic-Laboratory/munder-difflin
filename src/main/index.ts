@@ -453,9 +453,11 @@ function teardownPty(id: string): void {
 function informGod(subject: string, body: string, slack?: { channel: string; thread_ts: string }): void {
   try {
     const slackLine = slack
-      // `$HIVE_NODE` (injected into every agent's env) — NOT bare `node`, which is
-      // absent from the PATH of any machine whose node comes from nvm.
-      ? `\n\n[SLACK] Close the loop — post a reply to channel ${slack.channel} thread ${slack.thread_ts} via:\n  "$HIVE_NODE" "${slackReplyScriptPath()}" --channel ${slack.channel} --thread ${slack.thread_ts} --text "<your message>"`
+      // The bundled-node launcher, spelled as an ABSOLUTE PATH — NOT bare `node`
+      // (absent from the PATH of any machine whose node comes from nvm) and NOT
+      // `$HIVE_NODE` (POSIX-only: cmd.exe/PowerShell expand it to nothing, so the
+      // whole reply command was dead on Windows).
+      ? `\n\n[SLACK] Close the loop — post a reply to channel ${slack.channel} thread ${slack.thread_ts} via:\n  "${hive.nodeCommand()}" "${slackReplyScriptPath()}" --channel ${slack.channel} --thread ${slack.thread_ts} --text "<your message>"`
       : '';
     hive.send({ to: 'god', act: 'inform', subject, body: body + slackLine }, 'ephemeral-worker');
   } catch (e) {
@@ -1220,7 +1222,7 @@ let lastSlackUrl: string | undefined;
 function buildAutonomousRequestProtocol(channel: string, threadTs: string, helperPath: string): string {
   return `[AUTONOMOUS REQUEST PROTOCOL — this request arrived via Slack; no interactive human is watching] Handle it under this protocol:
 1. ROUTE FAST — triage and hand this to the single most-relevant agent right away. CHECK THE LIVE ROSTER FIRST (active agents in registry.json + their state in fleet.json) and prefer an EXISTING agent that fits — especially when the request names one ("ask Pam…", "have Jim…"): route to that agent and only spawn a new one if none is a sensible fit. Decompose only if it genuinely needs several. Don't sit on it.
-2. DELEGATE WITH THE REPLY HANDLE — tell that agent to do the work autonomously AND to post its result back to THIS Slack thread itself when done, using exactly: "$HIVE_NODE" "${helperPath}" --channel ${channel} --thread ${threadTs} --text "<substantive result>" ($HIVE_NODE is the harness's bundled Node, injected into every agent's env — bare "node" is not on the hook/agent PATH on many machines.)
+2. DELEGATE WITH THE REPLY HANDLE — tell that agent to do the work autonomously AND to post its result back to THIS Slack thread itself when done, using exactly: "${hive.nodeCommand()}" "${helperPath}" --channel ${channel} --thread ${threadTs} --text "<substantive result>" (that first path is the harness's bundled Node, already resolved for this machine — pass it verbatim; bare "node" is not on the hook/agent PATH on many machines.)
 3. AUTONOMOUS EXECUTION — no interactive questions. PAUSE/ask ONLY for high-severity actions: pushing to main or any remote; buying or spawning infrastructure or paid services; deleting an existing repo, file, or folder it did not create. Stay READ-ONLY at critical infrastructure and git-push-type changes unless explicitly approved.
 4. DIRECT, SUBSTANTIVE REPLY — the agent posts a real Slack-mrkdwn answer (short *bold* headline + the actual outcome/specifics/links), NEVER a bare "done"/":white_check_mark:".
 5. REPORT TO GOD — the agent then tells you (Michael) what it did.
@@ -2854,6 +2856,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         {
           semanticMemory: memory.active(),
           knowledgeGraph: knowledge.active(),
+          // Bake the ABSOLUTE KG CLI path into the agent's prompt. The prompt used
+          // to spell it `$KG_CLI`, which is POSIX-only: under cmd.exe/PowerShell it
+          // expands to nothing, so every knowledge-graph instruction was dead on a
+          // Windows floor. Empty when the KG is off (the line isn't emitted then).
+          kgCliPath: knowledge.env().KG_CLI,
           theme: readConfig().terminalTheme ?? 'light',
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,

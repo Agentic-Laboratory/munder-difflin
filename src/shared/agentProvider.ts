@@ -352,6 +352,23 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     // (protocol re-injected as the initial prompt), matching codex.
     resumeFlag: undefined,
     installCommand: 'npm install -g opencode-ai@latest', // trusted, hardcoded
+    // Node-free installers, for the rung that runs when npm is absent AND no Node
+    // installer could be resolved (offline / unsupported platform) — until now
+    // OpenCode had none, so that rung printed a manual hint and installed nothing.
+    // Both are trusted, hardcoded constants and contain no double-quotes (the
+    // win32 form is wrapped verbatim in `cmd /d /s /c "…"`).
+    //
+    // Unlike Claude, OpenCode ships NO standalone Windows one-liner: opencode.ai
+    // serves the POSIX install script but has no `install.ps1` (verified 404), and
+    // its docs list Chocolatey/Scoop as the Windows-native routes. `-y` because the
+    // banner runs the command unattended in the agent terminal. Honest limitation:
+    // this rung needs Chocolatey already present; when it isn't, the user sees
+    // choco's own "not recognized" error plus the banner's existing "run the
+    // command above manually" fallback — no worse off than the manual-only text.
+    nativeInstallCommand: {
+      posix: 'curl -fsSL https://opencode.ai/install | bash',
+      win32: 'choco install opencode -y'
+    },
     docsUrl: 'https://opencode.ai/docs'
   },
   {
