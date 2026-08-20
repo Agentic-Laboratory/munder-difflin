@@ -75,6 +75,14 @@ export function UpdatesSection() {
             size="sm"
             onClick={() => { void onClick(); }}
             disabled={busy || view.busy}
+            // The label is a phrase ("Check for updates", "Restart to update"),
+            // and this row is a flex line whose left column carries two lines of
+            // prose. Without these the button is the flexible item: it gets
+            // squeezed, the label wraps to two lines, and because the button's
+            // height comes from its size variant the second line prints straight
+            // through the bottom border. Refuse to shrink and refuse to wrap —
+            // the prose column already has minWidth: 0, so it yields instead.
+            style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
           >
             {view.button}
           </PixelButton>

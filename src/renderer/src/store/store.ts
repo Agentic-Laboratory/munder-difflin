@@ -175,6 +175,17 @@ interface State {
    *  is open. Toggled from the title-bar IDE button; a global feature surface,
    *  independent of the per-agent sidebar Files/Git tabs. */
   ideOpen: boolean;
+  /** WHICH agent the IDE was opened FOR — set by whoever opens it.
+   *
+   *  The IDE used to infer its workspace purely from `selectedId`, which is a
+   *  guess that is usually right and occasionally wrong: `setFullscreen` puts an
+   *  agent's terminal on screen WITHOUT selecting it, so hitting IDE from a
+   *  fullscreen terminal could open a different agent's directory than the one
+   *  being looked at. That was invisible while the title said only "IDE" and the
+   *  folder name; it becomes a flatly wrong agent NAME once the title names one.
+   *  Callers therefore state their intent, and `selectedId` stays as the
+   *  fallback for anything that genuinely has no particular agent in mind. */
+  ideAgentId: string | null;
   sidebarWidth: number;
   sidebarTab: SidebarTab;
   godStatus: GodStatus;
@@ -277,7 +288,10 @@ interface State {
   setPendingHire: (m: HireManifest | null) => void;
   setFullscreen: (id: string | null) => void;
   setFullscreenFile: (path: string | null, view?: 'edit' | 'preview') => void;
-  setIdeOpen: (open: boolean) => void;
+  /** Open/close the IDE. `agentId` names the agent whose workspace it should
+   *  show; omit it only when the caller truly has no specific agent (the IDE
+   *  then falls back to the selection and says so in its title). */
+  setIdeOpen: (open: boolean, agentId?: string | null) => void;
   setIdeInitialFile: (path: string | null) => void;
   setSidebarWidth: (px: number) => void;
   setSidebarTab: (tab: SidebarTab) => void;
@@ -592,6 +606,7 @@ export const useStore = create<State>((set) => ({
   fullscreenFileView: 'edit',
   ideInitialFile: null,
   ideOpen: false,
+  ideAgentId: null,
   sidebarWidth: initialSidebarWidth,
   sidebarTab: initialSidebarTab,
   godStatus: 'booting',
@@ -831,7 +846,10 @@ export const useStore = create<State>((set) => ({
   setPendingHire: (m) => set({ pendingHire: m }),
   setFullscreen: (id) => set({ fullscreenAgentId: id }),
   setFullscreenFile: (path, view) => set({ fullscreenFilePath: path, fullscreenFileView: view ?? 'edit' }),
-  setIdeOpen: (open) => set({ ideOpen: open }),
+  // Closing CLEARS the target: the id is scoped to one IDE session, and a stale
+  // one left behind would silently win over the selection on the next open from
+  // a caller that passes nothing.
+  setIdeOpen: (open, agentId) => set({ ideOpen: open, ideAgentId: open ? (agentId ?? null) : null }),
   setIdeInitialFile: (path) => set({ ideInitialFile: path }),
   setSidebarWidth: (px) => {
     const clamped = Math.min(1200, Math.max(320, Math.round(px)));

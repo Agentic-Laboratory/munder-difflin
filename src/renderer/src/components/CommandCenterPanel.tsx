@@ -10,6 +10,7 @@ import { AskMeTab } from './AskMeTab';
 import { TriggersTab } from './triggers/TriggersTab';
 import { TriggerHistoryTab } from './triggers/TriggerHistoryTab';
 import { WorkersTab } from './WorkersTab';
+import { SkillsTab } from './SkillsTab';
 import { acquireTerminal, disposeTerminal, resetTerminal } from './terminalPool';
 import { terminalInstanceKey } from './terminalRecovery';
 import { Icon } from './Icon';
@@ -42,7 +43,7 @@ import { canReceiveInbox } from '@shared/agentProvider';
 // the old Schedules tab: schedules are now one of four trigger types, and the
 // whole surface lives in ./triggers (see src/shared/triggers.ts for the contract).
 type CCTab = 'terminal' | 'floor' | 'tasks' | 'human' | 'triggers' | 'trigger-history'
-  | 'memory' | 'graph' | 'activity' | 'handbook' | 'workers';
+  | 'memory' | 'graph' | 'activity' | 'handbook' | 'skills' | 'workers';
 
 /** Fallback denominator for the per-agent token meter when no floor token budget
  *  is configured — so the bar reads as a budget estimate (filled + remaining)
@@ -71,6 +72,7 @@ const TABS: { key: CCTab; label: string; icon: Parameters<typeof Icon>[0]['name'
   { key: 'graph', label: 'graph', icon: 'web' },
   { key: 'activity', label: 'activity', icon: 'bell' },
   { key: 'handbook', label: 'commands', icon: 'code' },
+  { key: 'skills', label: 'skills', icon: 'sparkle' },
   { key: 'workers', label: 'workers', icon: 'gear' }
 ];
 
@@ -197,7 +199,13 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
               {floorDeliveryPaused ? 'paused' : 'auto'}
             </span>
           </PixelButton>
-          <PixelButton variant="secondary" size="sm" onClick={() => useStore.getState().setIdeOpen(true)}>
+          {/* Floor-level surface with no agent of its own: the honest target is
+              whoever is selected, stated explicitly rather than left to the
+              IDE's fallback so the intent is visible at the call site. */}
+          <PixelButton variant="secondary" size="sm" onClick={() => {
+            const s = useStore.getState();
+            s.setIdeOpen(true, s.selectedId);
+          }}>
             <span title="Open the IDE — file editor + git diff" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <Icon name="code" /> IDE
             </span>
@@ -224,7 +232,11 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
               padding: '4px 8px 3px', border: 'none', cursor: 'pointer',
               background: tab === t.key ? `var(--cth-${agent.accent})` : 'var(--cth-cream-200)',
-              color: 'var(--cth-ink-900)',
+              // The selected tab is filled with the agent's accent, which is a
+              // LIGHT colour in both themes. ink-900 flips to near-white in dark
+              // mode, so the active tab's label was pale-on-pale — the one tab
+              // you most need to read. On-accent text is dark in both themes.
+              color: tab === t.key ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)',
               boxShadow: tab === t.key
                 ? 'inset 0 0 0 1px var(--cth-ink-300)'
                 : 'inset 0 0 0 1px var(--cth-ink-100)',
@@ -282,6 +294,7 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
         )}
         {tab === 'activity' && <ActivityTab />}
         {tab === 'handbook' && <HandbookTab />}
+        {tab === 'skills' && <SkillsTab agentCwd={agent.cwd} />}
         {tab === 'workers' && <WorkersTab />}
       </div>
     </PixelPanel>
