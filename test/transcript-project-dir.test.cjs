@@ -119,3 +119,22 @@ test('the real failing path resolves to the dir Claude Code actually writes', ()
     );
   });
 });
+
+test('a root cwd never resolves to the projects directory itself', () => {
+  withHome((home, mkProject) => {
+    // legacyProjectKey('/') is the empty string, and path.join(root, '') is the
+    // projects ROOT — which always exists, so an unguarded fallback would hand
+    // back the directory holding EVERY project and seed the session file there.
+    //
+    // The projects root MUST exist for this case to mean anything: the guard sits
+    // on the legacy fallback, and that branch is only reached when existsSync()
+    // says the candidate is there. Upstream's version of this test ran against an
+    // empty throwaway home, where the root does not exist, so it passed with the
+    // guard removed — i.e. it pinned nothing. One unrelated project makes the root
+    // real, exactly as it is on any machine that has ever run Claude Code.
+    mkProject('-Users-me-somewhere-else');
+    const resolved = projectDir('/');
+    assert.notEqual(resolved, path.join(home, '.claude/projects'));
+    assert.equal(path.basename(resolved), '-');
+  });
+});
