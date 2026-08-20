@@ -112,6 +112,39 @@ export function expandTilde(p: string): string {
   return resolve(out);
 }
 
+/**
+ * Normalize the hive home and its recent-list in one place (#140).
+ *
+ * Onboarding SUGGESTS `~/HarnessAgents` in a free-text field, so the single most
+ * common setup path — accept the default, press Finish — used to persist a literal
+ * `~`. Finish immediately creates that directory, and Node's mkdir has no concept
+ * of `~`: it tried to create a folder literally named "~" and died with
+ * `ENOENT: no such file or directory, mkdir '~/HarnessAgents'`, wedging the wizard
+ * on its last step. Expanding at the config-write boundary means every downstream
+ * reader — mkdir, the hive root, the launch picker — sees one absolute path.
+ *
+ * `prior` is normalized too: entries written before this existed would otherwise
+ * let the launch picker hand a stale `~/…` string straight back and reintroduce
+ * the same failure. Deduped against the new home, newest first, capped.
+ */
+export function normalizeHiveHome(
+  home: string,
+  prior: readonly string[] = [],
+  cap = 8
+): { home: string; recentHives: string[] } {
+  const abs = expandTilde(home);
+  const seen = new Set<string>([abs]);
+  const recentHives = [abs];
+  for (const h of prior) {
+    if (typeof h !== 'string' || !h.trim()) continue;
+    const e = expandTilde(h);
+    if (seen.has(e)) continue;
+    seen.add(e);
+    recentHives.push(e);
+  }
+  return { home: abs, recentHives: recentHives.slice(0, cap) };
+}
+
 /** Existence/metadata check for an ABSOLUTE path (v0.3.4 — backs the terminal
  *  ⌘-click markdown flow). `~/` is expanded here (the renderer doesn't know
  *  the home dir). Read-only metadata: returns whether a regular file exists and
