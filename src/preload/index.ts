@@ -137,6 +137,7 @@ export interface HumanQA {
   a?: string;
   askedAt?: string;
   answeredAt?: string;
+  dismissedAt?: string;
 }
 
 /** A card on the task kanban, persisted to hive/tasks.json. */
@@ -973,9 +974,17 @@ const api = {
   },
 
   // ─── Task kanban (hive/tasks.json) ───────────────────────────────────────
-  /** Overwrite the hive task ledger with the full task list and commit it. */
-  hiveWriteTasks: (tasks: HiveTask[]): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('hive:writeTasks', tasks),
+  /** Atomically append one card against the latest main-process ledger. */
+  hiveAddTask: (task: HiveTask): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('hive:addTask', task),
+  /** Atomically patch one named card without replacing unrelated cards/fields. */
+  hivePatchTask: (
+    id: string,
+    patch: Partial<Omit<HiveTask, 'id'>>
+  ): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('hive:patchTask', id, patch),
+  /** Atomically remove one named card from the latest main-process ledger. */
+  hiveDeleteTask: (id: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('hive:deleteTask', id),
 
   // ─── Scheduled missions (recurring auto-dispatch) ──────────────────────────
   listMissions: (): Promise<ScheduledMission[]> => ipcRenderer.invoke('missions:list'),

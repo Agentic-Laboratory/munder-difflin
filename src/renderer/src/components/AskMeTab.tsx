@@ -3,7 +3,6 @@ import { PixelButton } from './PixelButton';
 import { PixelBadge } from './PixelBadge';
 import { useStore } from '@/store/store';
 import { type HiveTask, type HumanQA, openQuestion, waitsOnHuman } from './TasksKanban';
-import { patchTaskInLedger } from '../../../shared/taskLedger';
 
 /**
  * ASK ME — first-class human feedback through the task system.
@@ -16,7 +15,7 @@ import { patchTaskInLedger } from '../../../shared/taskLedger';
  * tasks stuck waiting on this one — so "why isn't X done?" reads as "ah,
  * because I still owe something here."
  *
- * Sending an answer does two things atomically-ish:
+ * Sending an answer does two things:
  *   1. writes it into the card's humanQA entry in hive/tasks.json (the
  *      decision is documented ON the task, forever), and
  *   2. mails the god so it picks the answer up, unblocks the card, and the
@@ -71,12 +70,16 @@ export function AskMeTab() {
    * Apply `patch` to the OPEN humanQA entry of one card, on the RAW ledger.
    * Returns whether it landed.
    *
-   * Re-reads tasks.json first rather than writing this view's 5s-old snapshot,
-   * because `hive:writeTasks` treats the incoming array as the card MEMBERSHIP:
-   * writing our snapshot back would delete any card the god added since the last
-   * poll. Re-locating the open question by its text also means an answer can
-   * never land on a different question the god swapped in underneath us — in
-   * that case nothing is written and the draft is kept.
+   * Re-reads tasks.json first rather than trusting this view's 5s-old snapshot.
+   * That read is now purely a CORRECTNESS CHECK, not a write payload: re-locating
+   * the open question by its text means an answer can never land on a different
+   * question the god swapped in underneath us — in that case nothing is written
+   * and the draft is kept.
+   *
+   * The write itself sends only the humanQA field for one card id, so the card
+   * MEMBERSHIP never crosses the wire. The old shape sent the whole array and had
+   * to re-read purely to avoid deleting cards added since the last poll; main now
+   * patches its own latest ledger, which closes the read→write window too.
    */
   const patchOpenQuestion = async (
     taskId: string,
@@ -91,8 +94,8 @@ export function AskMeTab() {
     const open = card ? openQuestion(card) : undefined;
     if (!card || !open || open.q !== question) return false;
     const humanQA = (card.humanQA ?? []).map((e) => (e === open ? { ...e, ...patch } : e));
-    await window.cth.hiveWriteTasks(patchTaskInLedger(list, taskId, { humanQA }) as HiveTask[]);
-    return true;
+    const result = await window.cth.hivePatchTask(taskId, { humanQA });
+    return result.ok;
   };
 
   const sendAnswer = async (task: HiveTask) => {
@@ -130,7 +133,6 @@ export function AskMeTab() {
   // stops returning it and the card leaves this view — the question itself stays
   // on the card, so the Q&A history is never dropped (protocol). The task stays
   // blocked on the kanban; the god can re-ask by appending a fresh humanQA entry.
-  // Reuses hiveWriteTasks (same path as the answer flow) — no new IPC.
   const dismiss = async (task: HiveTask) => {
     const open = openQuestion(task);
     if (!open || sending === task.id) return;

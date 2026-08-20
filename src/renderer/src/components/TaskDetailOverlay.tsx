@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '@/store/store';
 import { TaskDetail, parseTasks, type HiveTask } from './TasksKanban';
-import { patchTaskInLedger } from '../../../shared/taskLedger';
 
 /**
  * App-wide host for the task detail: whoever calls store.openTaskDetail(id) —
@@ -41,19 +40,22 @@ export function TaskDetailOverlay() {
   const nameFor = (id?: string): string | undefined =>
     id ? (agents.find((a) => a.id === id)?.name ?? restorable.find((a) => a.id === id)?.name ?? id) : undefined;
 
-  // Moving a card writes ONE field. Operate on the RAW ledger (the same pattern
-  // as TasksKanban.dismissTask), never on the display-parsed state: parseTasks
-  // NORMALIZES, so re-serializing it turns a hand-written `priority: "high"`
-  // into the number 3 and grafts `dependsOn: []` onto a card that spells the key
-  // `deps`. Those are real values, so they survive the merge in hive.writeTasks
-  // and land on disk — a status change quietly rewriting the god's cards.
+  // Moving a card writes ONE field, and now says exactly that: main patches the
+  // named card on its own latest on-disk ledger.
+  //
+  // This used to read the RAW ledger here and write the whole array back, to keep
+  // parseTasks' normalization off the disk — re-serializing the display model
+  // turns a hand-written `priority: "high"` into the number 3 and grafts
+  // `dependsOn: []` onto a card that spells the key `deps`. Sending only the
+  // changed field keeps that guarantee (nothing is re-serialized) and closes the
+  // gap the old shape could not: between the read and the write, a webhook or the
+  // god could add a card, and the array we sent was the membership, so the new
+  // card vanished.
   const move = async (status: HiveTask['status']) => {
     setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status } : t))); // optimistic
     try {
-      const raw = (await window.cth.hiveTasks()) as { tasks?: unknown };
-      await window.cth.hiveWriteTasks(
-        patchTaskInLedger(raw?.tasks, task.id, { status }) as HiveTask[]
-      );
+      const result = await window.cth.hivePatchTask(task.id, { status });
+      if (!result.ok) void refresh();
     } catch { void refresh(); }
   };
 

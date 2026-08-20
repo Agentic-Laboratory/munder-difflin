@@ -95,6 +95,7 @@ export interface HumanQA {
   a?: string;
   askedAt?: string;
   answeredAt?: string;
+  dismissedAt?: string;
 }
 
 export interface HiveTask {
@@ -514,7 +515,7 @@ export class HiveManager {
 
     // Keep the churny/ephemeral live files out of the hive git repo.
     const gitignore = join(root, '.gitignore');
-    const want = ['fleet.json', 'hooks.sock', '.DS_Store'];
+    const want = ['fleet.json', 'hooks.sock', 'cost-ledger.jsonl', '.DS_Store'];
     let lines: string[] = [];
     if (existsSync(gitignore)) { try { lines = readFileSync(gitignore, 'utf8').split('\n'); } catch { lines = []; } }
     const missing = want.filter((w) => !lines.includes(w));
@@ -1422,6 +1423,45 @@ export class HiveManager {
     this.appendLog({ kind: 'tasks', count: merged.length });
     this.commit(`hive: tasks (${merged.length})`);
   }
+
+  /** Append one card against the latest on-disk ledger. Renderer callers must
+   *  use this instead of re-writing a collection they read before another
+   *  source (webhook, Slack, god, voice) added work. Idempotent by task id. */
+  addTask(task: HiveTask): boolean {
+    const ledger = this.tasks() as { tasks?: HiveTask[] };
+    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
+    if (tasks.some((current) => current?.id === task.id)) return false;
+    this.writeTasks([...tasks, task]);
+    return true;
+  }
+
+  /** Patch one card against the latest on-disk ledger, preserving unrelated
+   *  cards and fields (notably webhook.tokenHash and Slack thread metadata).
+   *
+   *  Spreads over the RAW on-disk card, so this is also the patchTaskInLedger
+   *  rule enforced one process further in: the renderer never sends a card it
+   *  re-serialized from its normalizing display parser, because it never sends a
+   *  card at all — only the fields it means to change. */
+  patchTask(id: string, patch: Partial<Omit<HiveTask, 'id'>>): boolean {
+    const ledger = this.tasks() as { tasks?: HiveTask[] };
+    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
+    const index = tasks.findIndex((task) => task?.id === id);
+    if (index < 0) return false;
+    const next = tasks.slice();
+    next[index] = { ...tasks[index], ...patch, id };
+    this.writeTasks(next);
+    return true;
+  }
+
+  /** Delete only the named card from the latest on-disk ledger. */
+  deleteTask(id: string): boolean {
+    const ledger = this.tasks() as { tasks?: HiveTask[] };
+    const tasks = Array.isArray(ledger?.tasks) ? ledger.tasks : [];
+    const next = tasks.filter((task) => task?.id !== id);
+    if (next.length === tasks.length) return false;
+    this.writeTasks(next);
+    return true;
+  }
   memory(id: string): string {
     const p = join(this.agentDir(id), 'memory.md');
     return existsSync(p) ? readFileSync(p, 'utf8') : '';
@@ -1967,10 +2007,39 @@ export class HiveManager {
     return { ok: res.status === 0, out: res.stdout ?? '', err: res.stderr ?? '' };
   }
 
+  /** Has the one-time cost-ledger untrack pass run in this process yet? */
+  private untrackedCostLedger = false;
+
+  /**
+   * Stop versioning the cost ledger.
+   *
+   * `cost-ledger.jsonl` is append-only and gains a row per usage sample, so a
+   * repo that tracks it stores a fresh copy of the WHOLE file on every hive
+   * commit — and the hive commits constantly. A quarter-gigabyte ledger with a
+   * few thousand commits behind it is several hundred gigabytes of blob that
+   * git has to walk, which is what turns a routine `gc` into a multi-gigabyte
+   * `pack-objects` run. The ignore line in ensureHive keeps new copies out;
+   * this drops the one already in the index, because git keeps recording a
+   * file it is already tracking no matter what .gitignore says — so the ignore
+   * line alone reads as a fix while the repo goes on growing. The ledger stays
+   * on disk, so the cost history the app reads is untouched.
+   */
+  private untrackCostLedger(root: string): void {
+    if (this.untrackedCostLedger) return;
+    this.untrackedCostLedger = true;
+    // Probe before mutating: `rm --cached` on a repo that never tracked it
+    // would still rewrite the index on every launch, inside the retry path.
+    const tracked = this.git(['ls-files', '--', 'cost-ledger.jsonl'], root);
+    if (!tracked.ok || !tracked.out.trim()) return;
+    this.git(['rm', '--cached', '-q', '--ignore-unmatch', '--', 'cost-ledger.jsonl'], root);
+    console.warn('[hive] untracked the cost ledger from the hive repo');
+  }
+
   /** Commit all hive changes. No-op if there is nothing staged. */
   commit(message: string): void {
     const root = this.root();
     if (!root || !existsSync(join(root, '.git'))) return;
+    this.untrackCostLedger(root);
     for (let attempt = 0; attempt < 5; attempt++) {
       this.clearStaleLock(root);
       const add = this.git(['add', '-A'], root);
