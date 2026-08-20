@@ -347,7 +347,19 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     // inbox-wake nudge (useHive.ts) is the guaranteed fallback so a god still drains.
     canReceiveInbox: true,
     initialPromptFlag: '--prompt', // opencode --prompt "<orchestrator/worker brief>"
-    recommendedOrchestratorModel: 'anthropic/claude-sonnet-4-5', // OpenCode's own default; user may pick opus
+    // NO recommended model — deliberately. This used to preselect
+    // `anthropic/claude-sonnet-4-5` under the comment "OpenCode's own default",
+    // which was wrong on both halves: it is not OpenCode's default, and it is a
+    // BYOK slug that resolves only for a user who has authenticated Anthropic
+    // inside OpenCode. Without that key OpenCode SILENTLY falls back to whatever
+    // it can reach (observed live on Windows: "DeepSeek V4 Flash Free" via
+    // OpenCode Zen) while every surface in this app went on reporting Claude
+    // Sonnet 4.5 — the picker said one model, the agent ran another, and nothing
+    // flagged the divergence. Undefined means buildSpawnCommand emits no
+    // `--model` at all, so OpenCode uses the model the user actually configured;
+    // every BYOK slug in OPENCODE_MODELS stays one click away for whoever has
+    // the key.
+    recommendedOrchestratorModel: undefined,
     // Capturing the TUI session id for resume is unverified; spawn fresh on respawn
     // (protocol re-injected as the initial prompt), matching codex.
     resumeFlag: undefined,
