@@ -1075,6 +1075,14 @@ function runBreakerBeat(progressWindowMs: number): void {
     // (aggregateLive picks the most-recent live session id), so this gates on
     // "is there a live session" without changing any live-agent behavior.
     if (sample?.sessionId) hive.appendCostLedger(sample); // ledger covers everyone incl. god
+    // Second source for the resume key. recordSession() is otherwise reachable
+    // ONLY from the hook shim (hooks.ts), so any window where hooks don't land
+    // leaves the registry with no sessionId and "Restart & Continue" refuses to
+    // continue — while this very sample proves the app knew the live session id
+    // all along (it was already being written to the cost ledger one line above).
+    // Same id, same liveness gate; recordSession writes only on change, so this
+    // is a no-op once the hooks are flowing.
+    if (sample?.sessionId) hive.recordSession(id, sample.sessionId);
     if (id === reg.godId) continue;            // breaker skips god
     // Progress = fresh coordination files OR a recent OTel tool span. The span
     // leg closes the background-work blind spot: subagent/Workflow tool calls
@@ -3230,9 +3238,33 @@ ipcMain.handle('integrations:test', async (_evt, payload: unknown) => {
 // ─── IPC: config ────────────────────────────────────────────────────────────
 ipcMain.handle('config:get', (): HarnessConfig => readConfig());
 ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
+  // FIRST RUN: every hive-bound service is started by bootstrapHiveServices(),
+  // which runs once at app-ready and early-returns on `!hive.enabled()` — i.e.
+  // whenever harnessHome is still null, which is exactly the state a fresh
+  // install boots in. Onboarding then sets harnessHome through THIS handler and
+  // nothing re-bootstrapped, so the hook server, message router, telemetry
+  // collector and mission scheduler all stayed dead for the rest of the session.
+  //
+  // Symptom: agents spawn and run (the PTY is not hive-bound), but no hook ever
+  // reaches the app — no `hooks.sock` on disk, so no SessionStart, which means
+  // recordSession() is never called and "Restart & Continue" fails with "No
+  // recorded session ID"; the cards also sit on "ctx no status tick yet" and 0
+  // tool calls. Everything healed on the next app launch, which is what hid it.
+  //
+  // changeHome() has always handled this by relaunching; onboarding does not
+  // relaunch, so bootstrap here on the null → set transition. Gated on the
+  // transition so ordinary config writes never re-enter it.
+  const hiveWasEnabled = hive.enabled();
   const next = writeConfig(patch);
   // Live opt-in/out from Settings → Privacy (TELEMETRY.md).
   if (typeof patch?.telemetryEnabled === 'boolean') analytics.setEnabled(patch.telemetryEnabled);
+  // Ordered BEFORE the Matrix reconcile below: bootstrapHiveServices() is what
+  // starts the message router, and a Matrix listener coming up first would have
+  // nowhere to route an inbound message on a first run.
+  if (!hiveWasEnabled && hive.enabled()) {
+    console.log('[hive] harnessHome configured — bootstrapping hive services');
+    try { bootstrapHiveServices(); } catch (e) { console.error('[hive] bootstrap after onboarding:', e); }
+  }
   // Matrix has no bespoke start/stop IPC (see the Matrix listener section): the
   // Settings pane saves through this generic handler, so this is where the /sync
   // listener is brought back in line. Gated on the patch actually carrying a
