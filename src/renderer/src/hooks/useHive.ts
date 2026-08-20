@@ -25,7 +25,7 @@ import type { AgentProvider } from '../../../shared/agentProvider';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
 import { canDeliverToAgent, deliverWithAcknowledgement } from './queueDelivery';
 import { INBOX_NUDGE_TEXT, nudgeDecision, shouldSuppressStaleNudge, type NudgeState } from './inboxNudge';
-import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
+import { ALL_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 
 const GOD_ID = 'god';
 /** Accent palette for MAIN-spawned (voice-hired) agents — picked deterministically
@@ -983,7 +983,7 @@ export function useHive(config: HarnessConfig | null): void {
       if (useStore.getState().agents.some((a) => a.id === rec.id)) return;
       const key = (rec.name || rec.id).toLowerCase();
       const character =
-        OFFICE_CAST.find((m) => m.name === key || m.displayName.toLowerCase() === key)?.name ??
+        ALL_CAST.find((m) => m.name === key || m.displayName.toLowerCase() === key)?.name ??
         DEFAULT_CHARACTER;
       let h = 0;
       for (const ch of rec.id) h = (h + ch.charCodeAt(0)) % SPAWN_ACCENTS.length;

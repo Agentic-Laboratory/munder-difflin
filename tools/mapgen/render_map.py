@@ -19,6 +19,7 @@ TILESETS = [
     (1,    'tilesets/office-tileset.png',        16, 16, 16),
     (513,  'tilesets/a5-office-floors-walls.png',16, 16, 16),
     (1025, 'tilesets/interiors.png',             16, 16, 16),
+    (2449, 'tilesets/wizardschool-castle.png',   16, 16, 16),
 ]
 TILE_LAYERS = ['floor', 'walls', 'furniture-below', 'furniture-above']
 SCALE = 3

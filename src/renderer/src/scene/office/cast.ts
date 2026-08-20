@@ -14,8 +14,20 @@ export type OfficeCharacterName =
   | 'oscar' | 'stanley' | 'phyllis' | 'andy' | 'kelly' | 'ryan'
   | 'toby' | 'creed' | 'meredith';
 
+/** The Wizarding School roster. Original characters: archetypes the genre shares
+ *  (a headmaster, a potions master, a groundskeeper, four house students), not
+ *  anyone's named characters. Same for the four houses below. */
+export type WizardCharacterName =
+  | 'sable' | 'ashcroft' | 'bane' | 'bramble' | 'thorne'
+  | 'quill' | 'rowan' | 'cassius' | 'lark' | 'barnaby';
+
+/** Any character in any theme. An agent keeps its character across a theme
+ *  switch, so every lookup that resolves a stored value must accept the union —
+ *  only the Add-Agent picker narrows to the active theme's roster. */
+export type CharacterName = OfficeCharacterName | WizardCharacterName;
+
 export interface CastMember {
-  name: OfficeCharacterName;
+  name: CharacterName;
   displayName: string;
   /** Signature accent color (hex) — used for the in-scene selection glow. */
   shirt: string;
@@ -42,17 +54,66 @@ export const OFFICE_CAST: CastMember[] = [
   { name: 'meredith', displayName: 'Meredith', shirt: '#b5544a', blurb: 'Supplier relations' },
 ];
 
-export const CAST_BY_NAME: Record<OfficeCharacterName, CastMember> =
-  Object.fromEntries(OFFICE_CAST.map((c) => [c.name, c])) as Record<OfficeCharacterName, CastMember>;
+/** Wizarding School cast. `shirt` is the in-scene selection glow — house colour
+ *  for students, robe colour for staff. */
+export const WIZARD_CAST: CastMember[] = [
+  { name: 'sable',    displayName: 'Sable',    shirt: '#5a6bb0', blurb: 'Headmaster' },
+  { name: 'ashcroft', displayName: 'Ashcroft', shirt: '#3a8a62', blurb: 'Deputy head, transfiguration' },
+  { name: 'bane',     displayName: 'Bane',     shirt: '#4a4658', blurb: 'Potions master' },
+  { name: 'bramble',  displayName: 'Bramble',  shirt: '#8a6440', blurb: 'Groundskeeper' },
+  { name: 'thorne',   displayName: 'Thorne',   shirt: '#8a222c', blurb: 'Emberwing, the marked one' },
+  { name: 'quill',    displayName: 'Quill',    shirt: '#a8323c', blurb: 'Emberwing, top of the class' },
+  { name: 'rowan',    displayName: 'Rowan',    shirt: '#c2603a', blurb: 'Emberwing, loyal to a fault' },
+  { name: 'cassius',  displayName: 'Cassius',  shirt: '#1e563a', blurb: 'Nightthistle, and never lets you forget' },
+  { name: 'lark',     displayName: 'Lark',     shirt: '#2a427c', blurb: 'Skyquill, elsewhere mostly' },
+  { name: 'barnaby',  displayName: 'Barnaby',  shirt: '#be8428', blurb: 'Goldbriar, herbology' },
+];
 
-export const DEFAULT_CHARACTER: OfficeCharacterName = 'jim';
+/** Every character across every theme. Use this to RESOLVE a stored character —
+ *  an agent hired under one theme must still resolve after a switch. Use
+ *  `castForTheme` for the picker, which should only OFFER the active roster. */
+export const ALL_CAST: CastMember[] = [...OFFICE_CAST, ...WIZARD_CAST];
+
+export const CAST_BY_NAME: Record<CharacterName, CastMember> =
+  Object.fromEntries(ALL_CAST.map((c) => [c.name, c])) as Record<CharacterName, CastMember>;
+
+export const OFFICE_CAST_BY_NAME: Record<string, CastMember> =
+  Object.fromEntries(OFFICE_CAST.map((c) => [c.name, c]));
+
+export const WIZARD_CAST_BY_NAME: Record<string, CastMember> =
+  Object.fromEntries(WIZARD_CAST.map((c) => [c.name, c]));
+
+export const DEFAULT_CHARACTER: CharacterName = 'jim';
+export const WIZARD_DEFAULT_CHARACTER: CharacterName = 'thorne';
+
+/** Which roster each theme OFFERS, keyed by ThemeId. Not typed as ThemeId and
+ *  not imported from themeRegistry, because themeRegistry imports this module —
+ *  one table keeps the theme id to a single occurrence here. Themes absent from
+ *  the table (brooklyn99, and the unbuilt ones) correctly get the office cast,
+ *  which is what their ThemeConfig reuses. */
+const ROSTERS: Record<string, { cast: CastMember[]; defaultCharacter: CharacterName }> = {
+  office: { cast: OFFICE_CAST, defaultCharacter: DEFAULT_CHARACTER },
+  wizardschool: { cast: WIZARD_CAST, defaultCharacter: WIZARD_DEFAULT_CHARACTER },
+};
+
+/** The roster the Add-Agent picker should OFFER for a theme. Keeping this
+ *  separate from ALL_CAST is what stops wizarding characters appearing in every
+ *  user's picker while the experimental flag is off. */
+export function castForTheme(theme?: string): CastMember[] {
+  return ROSTERS[theme ?? 'office']?.cast ?? OFFICE_CAST;
+}
+
+/** The default character for a theme's roster. */
+export function defaultCharacterForTheme(theme?: string): CharacterName {
+  return ROSTERS[theme ?? 'office']?.defaultCharacter ?? DEFAULT_CHARACTER;
+}
 
 export function hexToNumber(hex: string): number {
   return parseInt(hex.replace('#', ''), 16);
 }
 
 // ─── scene frames ────────────────────────────────────────────────────────────
-const frameCache = new Map<OfficeCharacterName, Texture[][]>();
+const frameCache = new Map<CharacterName, Texture[][]>();
 
 function bufToTexture(buf: Uint8ClampedArray): Texture {
   const canvas = document.createElement('canvas');
@@ -73,7 +134,7 @@ function bufToTexture(buf: Uint8ClampedArray): Texture {
  * and a back view (up — agents seated facing their desk show their back). The
  * three walk frames are stand / step-left / step-right.
  */
-export async function getCastFrames(name: OfficeCharacterName): Promise<Texture[][]> {
+export async function getCastFrames(name: CharacterName): Promise<Texture[][]> {
   const cached = frameCache.get(name);
   if (cached) return cached;
   const { front, back } = sceneFrameBufs(name);
@@ -93,7 +154,7 @@ export async function getCastFrames(name: OfficeCharacterName): Promise<Texture[
  */
 export async function paintCastPortrait(
   ctx: CanvasRenderingContext2D,
-  name: OfficeCharacterName,
+  name: CharacterName,
   scale = 2,
 ): Promise<void> {
   paintPortrait(ctx, name, scale);

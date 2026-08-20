@@ -6,12 +6,14 @@ import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
 import type { ThemeId } from '@/scene/office/themeRegistry';
+import { resolveThemeId } from '@/scene/office/themeLoader';
 
-// TV-show office themes (Phase 1 = the switch flow infra). Only `office` has a
-// real map+cast today; the five shows render via the loader's office fallback
-// until their content lands (Phase 2). `built: false` shows a "soon" tag and a
-// fallback note on switch, but the destructive switch flow still runs so the
-// whole pipeline (modal → delete cast → persist → re-seat) is exercisable now.
+// TV-show office themes (Phase 1 = the switch flow infra). `office`,
+// `brooklyn99` and `wizardschool` are registered in themeRegistry; the rest
+// render via the loader's office fallback until their content lands (Phase 2).
+// `built: false` shows a "soon" tag and a fallback note on switch, but the
+// destructive switch flow still runs so the whole pipeline (modal → delete cast
+// → persist → re-seat) is exercisable now.
 interface ThemeMeta { id: ThemeId; label: string; blurb: string; built: boolean; swatch: string; }
 const THEME_META: ThemeMeta[] = [
   { id: 'office',        label: 'The Office',         blurb: 'Dunder Mifflin — the original floor', built: true,  swatch: '#6b5a4a' },
@@ -19,7 +21,7 @@ const THEME_META: ThemeMeta[] = [
   { id: 'brooklyn99',    label: 'Brooklyn Nine-Nine', blurb: 'The 99th precinct bullpen',           built: true,  swatch: '#3a5a7a' },
   { id: 'siliconvalley', label: 'Silicon Valley',     blurb: 'The Hacker Hostel',                   built: false, swatch: '#4a6a4a' },
   { id: 'got',           label: 'Game of Thrones',    blurb: 'The Red Keep throne room',            built: false, swatch: '#6a2630' },
-  { id: 'hogwarts',      label: 'Harry Potter',       blurb: 'Hogwarts great hall',                 built: false, swatch: '#39305a' },
+  { id: 'wizardschool',  label: 'Wizarding School',   blurb: 'Castle great hall & common room',     built: true,  swatch: '#39305a' },
 ];
 
 /** Settings "Office Theme" section: an experimental flag toggle + a 6-card
@@ -27,7 +29,10 @@ const THEME_META: ThemeMeta[] = [
  *  it stays out of SettingsModal's bulk. */
 export function OfficeThemePicker({ config }: { config: HarnessConfig }) {
   const [enabled, setEnabled] = useState(!!config.tvShowOffices);
-  const [current, setCurrent] = useState<ThemeId>((config.officeTheme as ThemeId) ?? 'office');
+  // Through resolveThemeId, not a raw cast: a config saved under a since-renamed
+  // id would otherwise match no card, so nothing shows as current and clicking
+  // the renamed theme runs the DESTRUCTIVE switch to reach where we already are.
+  const [current, setCurrent] = useState<ThemeId>(resolveThemeId(config.officeTheme ?? 'office'));
   const [pending, setPending] = useState<ThemeId | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
