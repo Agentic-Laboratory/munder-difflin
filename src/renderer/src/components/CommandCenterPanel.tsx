@@ -197,7 +197,13 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
               {floorDeliveryPaused ? 'paused' : 'auto'}
             </span>
           </PixelButton>
-          <PixelButton variant="secondary" size="sm" onClick={() => useStore.getState().setIdeOpen(true)}>
+          {/* Floor-level surface with no agent of its own: the honest target is
+              whoever is selected, stated explicitly rather than left to the
+              IDE's fallback so the intent is visible at the call site. */}
+          <PixelButton variant="secondary" size="sm" onClick={() => {
+            const s = useStore.getState();
+            s.setIdeOpen(true, s.selectedId);
+          }}>
             <span title="Open the IDE — file editor + git diff" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <Icon name="code" /> IDE
             </span>

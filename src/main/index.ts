@@ -16,7 +16,7 @@ import {
   readConfig, writeConfig, resetConfig, ensureHarnessHome, ensureClaudePermissionsAccepted,
   modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
-import { listDir, readFileText, writeFileText, statAbs, expandTilde } from './fs';
+import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff, mainRepoRoot,
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe,
@@ -3366,6 +3366,14 @@ ipcMain.handle('fs:listDir', (_evt, root: unknown, rel: unknown) => {
 ipcMain.handle('fs:readFile', (_evt, root: unknown, rel: unknown) => {
   if (typeof root !== 'string' || typeof rel !== 'string') return { ok: false, error: 'invalid args' };
   return readFileText(root, rel);
+});
+// Raw bytes for files the text reader refuses (images). The renderer cannot
+// load them off disk itself — the CSP has no `file:` source and no file
+// protocol is registered — so the bytes come through here and become a `blob:`
+// URL on the other side. Same root confinement as every other fs handler.
+ipcMain.handle('fs:readBinary', (_evt, root: unknown, rel: unknown) => {
+  if (typeof root !== 'string' || typeof rel !== 'string') return { ok: false, error: 'invalid args' };
+  return readFileBinary(root, rel);
 });
 ipcMain.handle('fs:writeFile', (_evt, root: unknown, rel: unknown, content: unknown) => {
   if (typeof root !== 'string' || typeof rel !== 'string' || typeof content !== 'string') {

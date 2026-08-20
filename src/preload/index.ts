@@ -652,6 +652,19 @@ const api = {
   readFile: (root: string, rel: string): Promise<
     { ok: true; content: string; path: string; size: number } | { ok: false; error: string }
   > => ipcRenderer.invoke('fs:readFile', root, rel),
+  /** Raw bytes for files `readFile` refuses (images). The renderer has no way to
+   *  load them off disk — the CSP allows no `file:` source and no file protocol
+   *  is registered — so images travel as bytes and become a `blob:` URL in the
+   *  renderer, which `img-src` already permits. Root-confined and size-capped in
+   *  the main process; `mime` is derived from the extension. */
+  readBinary: (root: string, rel: string): Promise<
+    // `Uint8Array<ArrayBuffer>`, not the bare alias: structured clone always
+    // hands the renderer a view over a plain ArrayBuffer, and saying so is what
+    // lets the value go straight into `new Blob([...])` — the default
+    // `ArrayBufferLike` admits SharedArrayBuffer, which BlobPart rejects.
+    { ok: true; bytes: Uint8Array<ArrayBuffer>; mime: string; path: string; size: number }
+    | { ok: false; error: string }
+  > => ipcRenderer.invoke('fs:readBinary', root, rel),
   writeFile: (root: string, rel: string, content: string): Promise<
     { ok: true; path: string } | { ok: false; error: string }
   > => ipcRenderer.invoke('fs:writeFile', root, rel, content),

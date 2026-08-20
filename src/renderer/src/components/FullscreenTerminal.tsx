@@ -808,8 +808,11 @@ function Header({ agent }: { agent: Agent }) {
       }}>“{agent.description}”</span>
       <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
         {/* v0.3.4: the IDE opens from agent level — full Monaco editor + git
-            diff over this agent's workspace. */}
-        <PixelButton variant="secondary" size="sm" onClick={() => useStore.getState().setIdeOpen(true)}>
+            diff over this agent's workspace. The id is passed EXPLICITLY:
+            fullscreen does not change the selection, so leaving the IDE to infer
+            its agent would open whichever agent happens to be selected in the
+            sidebar rather than the one filling the screen. */}
+        <PixelButton variant="secondary" size="sm" onClick={() => useStore.getState().setIdeOpen(true, agent.id)}>
           <span title="Open the IDE — file editor + git diff" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <Icon name="code" /> IDE
           </span>
