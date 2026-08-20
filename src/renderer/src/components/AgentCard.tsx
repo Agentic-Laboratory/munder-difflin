@@ -151,7 +151,9 @@ export function AgentCard({
                 {isGod && (
                   <span style={{
                     fontFamily: 'var(--cth-font-display)', fontSize: 7, lineHeight: '11px',
-                    background: `var(--cth-${accent})`, color: 'var(--cth-ink-900)',
+                    // Accent fill, so the label must be on-accent dark in BOTH
+                    // themes — ink-900 here went near-white on a pale accent.
+                    background: `var(--cth-${accent})`, color: 'var(--cth-on-accent)',
                     padding: '1px 4px 0', flexShrink: 0
                   }}>BOSS</span>
                 )}

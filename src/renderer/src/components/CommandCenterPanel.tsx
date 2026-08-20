@@ -232,7 +232,11 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
               padding: '4px 8px 3px', border: 'none', cursor: 'pointer',
               background: tab === t.key ? `var(--cth-${agent.accent})` : 'var(--cth-cream-200)',
-              color: 'var(--cth-ink-900)',
+              // The selected tab is filled with the agent's accent, which is a
+              // LIGHT colour in both themes. ink-900 flips to near-white in dark
+              // mode, so the active tab's label was pale-on-pale — the one tab
+              // you most need to read. On-accent text is dark in both themes.
+              color: tab === t.key ? 'var(--cth-on-accent)' : 'var(--cth-ink-900)',
               boxShadow: tab === t.key
                 ? 'inset 0 0 0 1px var(--cth-ink-300)'
                 : 'inset 0 0 0 1px var(--cth-ink-100)',
