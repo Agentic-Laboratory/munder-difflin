@@ -223,6 +223,61 @@ for (const id of themeIds) {
   });
 }
 
+// ─── ClickableProp: a hit area is only as good as the art under it ───────────
+// Parsed from the source, so renaming a tab breaks the test instead of silently
+// shipping a prop that opens nothing.
+const CC_TABS = (() => {
+  const src = fs.readFileSync(path.join(R, 'components/CommandCenterPanel.tsx'), 'utf8');
+  const decl = /type CCTab =([\s\S]*?);/.exec(src);
+  assert.ok(decl, 'CCTab union not found in CommandCenterPanel.tsx');
+  return new Set([...decl[1].matchAll(/'([\w-]+)'/g)].map((m) => m[1]));
+})();
+
+for (const id of themeIds) {
+  const theme = THEMES[id];
+  const map = JSON.parse(theme.mapRaw);
+  const layer = (name) => map.layers.find((l) => l.name === name && l.type === 'tilelayer');
+  const tileAt = (name, x, y) => ((layer(name)?.data?.[y * map.width + x]) ?? 0) & GID_MASK;
+  const walkable = (x, y) => x >= 0 && y >= 0 && x < map.width && y < map.height
+    && tileAt('collision', x, y) === 0;
+
+  test(`${id}: every clickable prop sits on real art and opens a real tab`, () => {
+    for (const prop of theme.props ?? []) {
+      const { x, y } = prop.tile;
+      const w = prop.w ?? 1, h = prop.h ?? 1;
+      assert.ok(CC_TABS.has(prop.tab), `prop "${prop.label}" opens tab "${prop.tab}", which is not a CCTab`);
+      assert.ok(prop.label, 'a prop with no label gives the viewer nothing on hover');
+      // Art anywhere in the footprint: the code draws none of its own, so with a
+      // bare anchor this is an invisible hit area over empty floor.
+      let art = 0;
+      for (let dx = 0; dx < w; dx++) {
+        for (let dy = 0; dy < h; dy++) {
+          if (tileAt('furniture-below', x + dx, y + dy) || tileAt('furniture-above', x + dx, y + dy)) art++;
+        }
+      }
+      assert.ok(art > 0, `prop "${prop.label}" at (${x},${y}) ${w}x${h} has no map art in its footprint`);
+      // No walkable tile inside the footprint. An agent standing in one would be
+      // under a pointer-catching Graphics, so the click that should SELECT them
+      // would open a Command Center tab instead. The office's conference table
+      // sits inside the boardroom zone, whose overflow seats are derived from
+      // whatever is walkable there (OfficeFloor.tsx addZoneSeats), so this is a
+      // live hazard, not a theoretical one.
+      for (let dx = 0; dx < w; dx++) {
+        for (let dy = 0; dy < h; dy++) {
+          assert.ok(!walkable(x + dx, y + dy),
+            `prop "${prop.label}" covers walkable tile (${x + dx},${y + dy}) — it would swallow clicks on an agent standing there`);
+        }
+      }
+      // And it has to be approachable, or it is a click target in a sealed box.
+      const ring = [];
+      for (let dx = -1; dx <= w; dx++) ring.push([x + dx, y - 1], [x + dx, y + h]);
+      for (let dy = 0; dy < h; dy++) ring.push([x - 1, y + dy], [x + w, y + dy]);
+      assert.ok(ring.some(([rx, ry]) => walkable(rx, ry)),
+        `prop "${prop.label}" at (${x},${y}) is walled in on every side`);
+    }
+  });
+}
+
 // ─── source guards: the props must stay theme-driven ─────────────────────────
 // Every assertion above reads ThemeConfig, so it is blind to a coordinate typed
 // straight into the scene. These two catch that: they are the reason the office's

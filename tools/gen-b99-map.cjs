@@ -125,6 +125,22 @@ set('above', PROPS.clock.x, PROPS.clock.y + 1, 370);
 set('coll', PROPS.clock.x, PROPS.clock.y, 1);
 set('coll', PROPS.clock.x, PROPS.clock.y + 1, 1);
 
+// Art for BROOKLYN99_THEME.props — the three Command Center tabs the floor can
+// reach. Nothing in this map was distinctive enough to hang them on, so the
+// precinct gets the furniture it should have had: evidence lockers in the
+// bullpen, a chalkboard and a duty-roster board in the briefing room. Solid, so
+// nobody walks through them.
+const stamp2x2 = (x, y, gids) => {
+  gids.forEach((gid, i) => {
+    const tx = x + (i % 2), ty = y + Math.floor(i / 2);
+    set('above', tx, ty, gid); set('coll', tx, ty, 1);
+  });
+};
+stamp2x2(25, 1, [291, 292, 307, 308]);    // grey lockers (top halves 291/292) -> memory
+stamp2x2(2, 1, [417, 418, 433, 434]);     // green chalkboard -> skills
+stamp2x2(7, 1, [419, 420, 435, 436]);     // duty-roster board -> workers
+const CLICKABLE = [{ x: 25, y: 1 }, { x: 2, y: 1 }, { x: 7, y: 1 }];
+
 // ── 6. spawn-points + zones ──────────────────────────────────────────────────
 const spawnObjs = [];
 let oid = 1;
@@ -180,9 +196,13 @@ const unwalkableStand = PROPS.boardStands.filter((t) => !walk[t.y][t.x]);
 const noClockArt = !L.above[idx(PROPS.clock.x, PROPS.clock.y)];
 const bareCoffee = ['trayTile', 'machineTile', 'sinkTile']
   .filter((k) => !(L.below[idx(COFFEE[k].x, COFFEE[k].y)] || L.above[idx(COFFEE[k].x, COFFEE[k].y)]));
+// A ClickableProp is a hit area over MAP art — with nothing painted, it is an
+// invisible click target on empty floor.
+const bareClickable = CLICKABLE
+  .filter((t) => !(L.below[idx(t.x, t.y)] || L.above[idx(t.x, t.y)]));
 
 if (unreachable.length || noApproach.length || floatingProp.length
-    || unwalkableStand.length || noClockArt || bareCoffee.length) {
+    || unwalkableStand.length || noClockArt || bareCoffee.length || bareClickable.length) {
   console.error('VALIDATION FAILED');
   if (unreachable.length) console.error('  unreachable:', unreachable.map(([n]) => n).join(', '));
   if (noApproach.length) console.error('  no walkable approach:', noApproach.map(([n]) => n).join(', '));
@@ -190,6 +210,7 @@ if (unreachable.length || noApproach.length || floatingProp.length
   if (unwalkableStand.length) console.error('  board stand inside collision:', JSON.stringify(unwalkableStand));
   if (noClockArt) console.error('  no clock art at anchors.clock — the quit prop would be invisible');
   if (bareCoffee.length) console.error('  coffee object tile with no art beneath it:', bareCoffee.join(', '));
+  if (bareClickable.length) console.error('  clickable prop with no art:', JSON.stringify(bareClickable));
   process.exit(1);
 }
 
@@ -218,4 +239,4 @@ const map = {
 fs.writeFileSync(OUT, JSON.stringify(map));
 const seats = Object.keys(SEATS).length, cafe = Object.keys(CAFE).length;
 console.log(`OK wrote ${path.relative(path.join(__dirname, '..'), OUT)} — ${W}x${H}, ${seats} desks, ${cafe} café spawns, zones: boardroom/cafeteria/holding`);
-console.log('   validation: reachability, seat approach, prop anchors, board stands, coffee art all OK');
+console.log('   validation: reachability, seat approach, prop anchors, board stands, coffee + clickable art all OK');

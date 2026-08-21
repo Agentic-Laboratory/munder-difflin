@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Application, Container, Graphics, Ticker, Texture } from 'pixi.js';
+import { Application, Container, Graphics, Text, Ticker, Texture } from 'pixi.js';
 // PixiJS uses new Function() internally, blocked by Electron CSP — this patches it.
 import 'pixi.js/unsafe-eval';
 import { useStore, type Agent } from '@/store/store';
@@ -1140,6 +1140,61 @@ export function OfficeFloor() {
         window.close(); // intercepted by the main process while PTYs are alive
       });
       charLayer.addChild(clockG);
+
+      // ─── Extra clickable props: the floor as the Command Center's door ─────
+      // Three tabs (memory, skills, workers) had no way in from the office. Each
+      // is a hit area over art the theme's MAP already paints — this code draws
+      // no prop art at all, only a hover outline and a label. That split is the
+      // whole point: the four props above draw themselves, which is why they
+      // carried the office's coordinates through an entire theme cycle.
+      for (const prop of theme.props ?? []) {
+        const pw = (prop.w ?? 1) * ts0;
+        const ph = (prop.h ?? 1) * ts0;
+        const propG = new Graphics();
+        propG.eventMode = 'static';
+        propG.cursor = 'pointer';
+        propG.position.set(prop.tile.x * ts0, prop.tile.y * ts0);
+        // Sort at the art's TOP row, which puts every character at or below that
+        // row above it: pixi hit-tests topmost-first, so a click on an agent
+        // always reaches the agent even if a prop's rect overlaps them. The
+        // contract test also forbids a prop covering any walkable tile.
+        propG.zIndex = prop.tile.y * ts0;
+        propG.hitArea = {
+          contains: (x: number, y: number) => x >= 0 && x <= pw && y >= 0 && y <= ph,
+        };
+        const propLabel = new Text({
+          text: prop.label,
+          style: { fontSize: 12, fontWeight: 'bold', fill: '#3d2e4a', fontFamily: 'monospace' },
+        });
+        propLabel.scale.set(0.5);                 // rendered at 2x, as ThoughtBubble does
+        propLabel.eventMode = 'none';
+        propLabel.visible = false;
+        propLabel.zIndex = propG.zIndex + 2;
+        propLabel.position.set(prop.tile.x * ts0 + 1, prop.tile.y * ts0 - 8);
+        const propTag = new Graphics();           // the label's plate, drawn behind it
+        propTag.eventMode = 'none';
+        propTag.visible = false;
+        propTag.zIndex = propG.zIndex + 1;
+        propTag.position.set(prop.tile.x * ts0, prop.tile.y * ts0 - 9);
+        propTag.roundRect(0, 0, propLabel.width + 3, 9, 2).fill(PROP.surface)
+          .stroke({ color: PROP.frame, width: 1 });
+        const setHover = (on: boolean): void => {
+          propG.clear();
+          if (on) propG.rect(0, 0, pw, ph).stroke({ color: PROP.askAccent, width: 1, alpha: 0.9 });
+          propTag.visible = on;
+          propLabel.visible = on;
+        };
+        propG.on('pointerover', () => setHover(true));
+        propG.on('pointerout', () => setHover(false));
+        propG.on('pointertap', (ev) => {
+          ev.stopPropagation();
+          const st = useStore.getState();
+          const god = st.agents.find((a) => a.isGod);
+          if (god) st.select(god.id);
+          st.requestCommandCenterTab(prop.tab);
+        });
+        charLayer.addChild(propG, propTag, propLabel);
+      }
 
       // ─── The ASK ME board: tasks waiting on the HUMAN, first class ─────────
       // Hangs on the right wall run (between the second doorway and the war

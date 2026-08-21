@@ -133,6 +133,26 @@ export interface AnchorConfig {
   askMePad?: number;
 }
 
+/** An extra clickable object on the floor: a hit area over art the theme's map
+ *  ALREADY paints, opening one Command Center tab.
+ *
+ *  The split matters. OfficeFloor supplies only the hit area, a hover outline and
+ *  the label; the art belongs to the map. The four older props (calendar, task
+ *  boards, clock, ASK ME) draw their own art in code, which is exactly why they
+ *  spent a whole theme cycle carrying the office's coordinates — there was no way
+ *  to reskin them without touching the scene. Nothing here can rot that way. */
+export interface ClickableProp {
+  /** A tab key from CommandCenterPanel's CCTab union. */
+  tab: string;
+  /** Top-left tile of the art this prop sits on. */
+  tile: Tile;
+  /** Hit area in tiles (default 1x1) — size it to the art. */
+  w?: number;
+  h?: number;
+  /** Shown on hover. Carries the meaning, so the art need not be literal. */
+  label: string;
+}
+
 /** Colors for the props OfficeFloor draws with Graphics rather than map tiles —
  *  the wall calendar, the two task boards, the archive table and the ASK ME
  *  board. The geometry is shared; only the palette is per-theme, which is what
@@ -195,6 +215,8 @@ export interface ThemeConfig {
   cafeStands: ReadonlyArray<readonly [string, 'coffee' | 'vending']>;
   coffee: CoffeeConfig;
   anchors: AnchorConfig;
+  /** Optional extra click targets on furniture the map already paints. */
+  props?: ClickableProp[];
   errandSpots: ErrandSpot[];
   monitor: MonitorConfig;
   palette: PaletteConfig;
@@ -243,6 +265,14 @@ export const OFFICE_THEME: ThemeConfig = {
     askMe: { x: 14, y: 10 },
     askMePad: 25,
   },
+  // Three Command Center tabs that had no way onto the floor, hung on furniture
+  // the office map already paints. The hover label carries the meaning, so the
+  // art only has to be the most fitting thing in the room.
+  props: [
+    { tab: 'memory', tile: { x: 30, y: 17 }, w: 2, h: 3, label: 'memory' },   // the binder shelf
+    { tab: 'skills', tile: { x: 30, y: 11 }, w: 3, h: 4, label: 'skills' },   // the vending machine
+    { tab: 'workers', tile: { x: 11, y: 3 }, w: 4, h: 4, label: 'workers' },  // the conference table
+  ],
   errandSpots: [
     // plants (droplets ride on the character via startWatering)
     { kind: 'water', stand: { x: 2, y: 20 }, facing: 'left', fx: { x: 1, y: 20 }, duration: 4.5 },
@@ -340,6 +370,13 @@ export const BROOKLYN99_THEME: ThemeConfig = {
     askMe: { x: 21, y: 1 },     // right of the boards, clear of the x=27 divider
     askMePad: 25,
   },
+  // On art the generator paints for exactly this purpose: evidence lockers in
+  // the bullpen, the briefing room's chalkboard and its duty-roster board.
+  props: [
+    { tab: 'memory', tile: { x: 25, y: 1 }, w: 2, h: 2, label: 'memory' },
+    { tab: 'skills', tile: { x: 2, y: 1 }, w: 2, h: 2, label: 'skills' },
+    { tab: 'workers', tile: { x: 7, y: 1 }, w: 2, h: 2, label: 'workers' },
+  ],
   // Placeholder errand anchors authored to brooklyn99.tmj's open floor (verified
   // walkable against the map's collision layer + desk stamps). The godOnly spots
   // sit inside Holt's glass office.
@@ -432,6 +469,13 @@ export const WIZARDSCHOOL_THEME: ThemeConfig = {
     askMe: { x: 28, y: 1 },     // the classroom's undressed north wall -> ASK ME
     askMePad: 0,
   },
+  // The castle already had the right three objects: what the school remembers,
+  // what it can cast, and where its students work.
+  props: [
+    { tab: 'memory', tile: { x: 26, y: 13 }, w: 2, h: 2, label: 'memory' },   // the common-room bookcase
+    { tab: 'skills', tile: { x: 31, y: 3 }, label: 'skills' },                // the potions shelf
+    { tab: 'workers', tile: { x: 27, y: 6 }, w: 4, h: 1, label: 'workers' },  // the brewing tables
+  ],
   // Authored against wizardschool.tmj and asserted walkable by the map
   // generator's validator (tools/gen-wizardschool-map.cjs).
   errandSpots: [
