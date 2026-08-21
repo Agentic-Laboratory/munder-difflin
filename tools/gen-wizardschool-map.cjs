@@ -117,6 +117,17 @@ banner(23, T.bannerGT, T.bannerGB);     // Goldbriar
 set('walls', 7, 1, C(T.skyB)); set('walls', 7, 2, C(T.skyA));   // open vault, night sky
 set('walls', 8, 1, C(T.skyA)); set('walls', 8, 2, C(T.skyB));
 [2, 11, 20].forEach((x) => set('above', x, 2, C(T.torch)));
+// The clock is a CLICK TARGET, not decoration: OfficeFloor hangs the quit flow
+// on ThemeConfig.anchors.clock and draws no art of its own, so without a tile
+// here the closing-time prop is invisible. One tile, hence clockSize 16x16.
+const PROPS = {
+  clock: { x: 1, y: 1 },
+  calendar: { x: 13, y: 1 },
+  askMe: { x: 28, y: 1 },
+  boards: { x: 28, y: 12 },
+  boardStands: [{ x: 29, y: 13 }, { x: 31, y: 13 }, { x: 32, y: 13 }],
+};
+set('above', PROPS.clock.x, PROPS.clock.y, C(T.clock));
 
 // ── 4. seat pods ─────────────────────────────────────────────────────────────
 // The seat marker is a 2x2 block on `furniture-above` occupying (sx..sx+1,
@@ -197,7 +208,8 @@ set('above', 31, 22, C(T.pumpkin));
 set('above', 34, 22, C(T.broom));
 const COFFEE = {
   trayTile: { x: 30, y: 16 }, trayStand: { x: 30, y: 17 },
-  machineStand: { x: 32, y: 17 }, sinkTile: { x: 34, y: 16 }, sinkStand: { x: 34, y: 17 },
+  machineTile: { x: 32, y: 16 }, machineStand: { x: 32, y: 17 },
+  sinkTile: { x: 34, y: 16 }, sinkStand: { x: 34, y: 17 },
 };
 const CAFE = {
   'cafe-seat-1': { x: 28, y: 19 }, 'cafe-seat-2': { x: 28, y: 21 },
@@ -253,8 +265,22 @@ const targets = [
   ...Object.entries(CAFE),
   ...Object.entries(COFFEE).map(([n, t]) => [`coffee:${n}`, t]),
   ...ERRANDS.map(([k, x, y], i) => [`errand:${k}#${i}`, { x, y }]),
+  // A board stand an actor cannot reach leaves findPath with nothing, and the
+  // note-carrying choreography hangs until OfficeFloor's 30 s watchdog.
+  ...PROPS.boardStands.map((t, i) => [`boardStand#${i}`, t]),
   ['entrance', ENTRANCE],
 ];
+// Props hang ON a wall (or on the row directly under one). A prop over open
+// floor renders as a board floating in mid-air with agents walking through it.
+const floatingProp = Object.entries(PROPS)
+  .filter(([n]) => n !== 'boardStands')
+  .filter(([, t]) => !(L.walls[idx(t.x, t.y)] || (t.y > 0 && L.walls[idx(t.x, t.y - 1)])));
+const unwalkableStand = PROPS.boardStands.filter((t) => !walk[t.y][t.x]);
+const noClockArt = !L.above[idx(PROPS.clock.x, PROPS.clock.y)];
+// The Graphics draw the mug rack, the basin and the steam OVER map art; with no
+// art beneath them they float on bare floor.
+const bareCoffee = ['trayTile', 'machineTile', 'sinkTile']
+  .filter((k) => !(L.below[idx(COFFEE[k].x, COFFEE[k].y)] || L.above[idx(COFFEE[k].x, COFFEE[k].y)]));
 const unreachable = targets.filter(([, t]) => !(inb(t.x, t.y) && seen[t.y][t.x]));
 const noApproach = Object.entries(SEATS).filter(([, s]) =>
   ![[s.x, s.y + 1], [s.x, s.y - 1], [s.x + 1, s.y], [s.x - 1, s.y]]
@@ -275,12 +301,17 @@ for (const [name, buf] of Object.entries(L)) {
   });
 }
 
-if (unreachable.length || noApproach.length || noMarker.length || badGid.length) {
+if (unreachable.length || noApproach.length || noMarker.length || badGid.length
+    || floatingProp.length || unwalkableStand.length || noClockArt || bareCoffee.length) {
   console.error('VALIDATION FAILED');
   if (unreachable.length) console.error('  unreachable:', unreachable.map(([n]) => n).join(', '));
   if (noApproach.length) console.error('  no walkable approach:', noApproach.map(([n]) => n).join(', '));
   if (noMarker.length) console.error('  seat marker missing/misplaced:', noMarker.map(([n]) => n).join(', '));
   if (badGid.length) console.error('  gid outside every atlas:', badGid.slice(0, 8).join(', '));
+  if (floatingProp.length) console.error('  prop not on a wall:', floatingProp.map(([n]) => n).join(', '));
+  if (unwalkableStand.length) console.error('  board stand inside collision:', JSON.stringify(unwalkableStand));
+  if (noClockArt) console.error('  no clock art at anchors.clock — the quit prop would be invisible');
+  if (bareCoffee.length) console.error('  coffee object tile with no art beneath it:', bareCoffee.join(', '));
   process.exit(1);
 }
 
@@ -311,4 +342,4 @@ const map = {
 };
 fs.writeFileSync(OUT, JSON.stringify(map));
 console.log(`OK wrote ${path.relative(path.join(__dirname, '..'), OUT)} — ${W}x${H}, ${Object.keys(SEATS).length} seats, ${Object.keys(CAFE).length} cafe spawns, zones: boardroom/cafeteria`);
-console.log(`   validation: reachability, seat approach, seat markers, gid ranges all OK`);
+console.log(`   validation: reachability, seat approach, seat markers, gid ranges, prop anchors, board stands, coffee art all OK`);

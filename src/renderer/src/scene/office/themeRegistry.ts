@@ -90,10 +90,17 @@ export interface MonitorConfig {
 }
 
 /** The coffee economy's fixed tiles: sideboard (mug rack) → counter machine →
- *  sink → back to the sideboard. `maxCups` caps the clean-mug stock. */
+ *  sink → back to the sideboard. `maxCups` caps the clean-mug stock.
+ *
+ *  `*Tile` names the OBJECT (map art the Graphics draw over); `*Stand` names the
+ *  walkable tile an agent paths to. The two are never the same tile — a stand
+ *  inside collision is unreachable and the errand silently never completes. */
 export interface CoffeeConfig {
   trayTile: Tile;
   trayStand: Tile;
+  /** The machine itself — where the steam rises from. Was hardcoded to the
+   *  office's (26,17) in OfficeFloor, three rows above its own stand. */
+  machineTile: Tile;
   machineStand: Tile;
   sinkTile: Tile;
   sinkStand: Tile;
@@ -101,11 +108,59 @@ export interface CoffeeConfig {
 }
 
 /** Clickable prop anchors (tile coords). calendar → TRIGGERS, boards → TASKS,
- *  clock → CLOSING TIME. */
+ *  askMe → ASK ME, clock → CLOSING TIME.
+ *
+ *  Everything here was hardcoded to the office's own coordinates until the
+ *  Wizarding School theme landed on top of it. The failures are all silent, so
+ *  test/theme-contract.test.cjs asserts each one per theme: a board stand inside
+ *  collision leaves `Character.walkToAndThen` with no path, which drops the
+ *  arrival callback and strands the choreography until the 30 s watchdog. */
 export interface AnchorConfig {
   calendar: Tile;
   boards: Tile;
+  /** px nudge centring the 82px board ensemble on THIS theme's wall run
+   *  (the office's own 15 is the default). */
+  boardsPad?: number;
+  /** Where an actor stands to pin / take / archive a note. Must be walkable
+   *  AND reachable from the entrance. */
+  boardStands: { pin: Tile; take: Tile; archive: Tile };
   clock: Tile;
+  /** Click extent in px. The office clock is a two-tile sprite (16x32); a
+   *  single-tile clock is 16x16, and the default would hang a dead 16px of
+   *  hit area into the tile below it. */
+  clockSize?: { w: number; h: number };
+  askMe: Tile;
+  askMePad?: number;
+}
+
+/** Colors for the props OfficeFloor draws with Graphics rather than map tiles —
+ *  the wall calendar, the two task boards, the archive table and the ASK ME
+ *  board. The geometry is shared; only the palette is per-theme, which is what
+ *  lets a castle hang parchment on oak where the office hangs paper on cork. */
+export interface PropStyle {
+  /** board frame + archive-table legs */
+  frame: number;
+  /** the pinnable surface: cork, or parchment */
+  surface: number;
+  /** a note whose status isn't in noteColors */
+  noteFallback: number;
+  /** pin heads, the calendar's nail and frame */
+  pin: number;
+  pileBack: number;
+  pileFront: number;
+  /** the calendar: page, month banner, binding rings, day grid */
+  page: number;
+  banner: number;
+  rings: number;
+  grid: number;
+  /** the archive table + the edge stroke on a filed sheet */
+  table: number;
+  tableShade: number;
+  doneEdge: number;
+  /** the ASK ME board: frame, header/notes/pulse, quiet "?" watermark */
+  askFrame: number;
+  askAccent: number;
+  askWatermark: number;
 }
 
 /** Theme palette. `background` is the canvas clear color; `noteColors` are the
@@ -113,6 +168,7 @@ export interface AnchorConfig {
 export interface PaletteConfig {
   background: number;
   noteColors: Record<string, number>;
+  propStyle: PropStyle;
 }
 
 /** Per-theme cast loader — the indirection point so a future show can swap its
@@ -171,6 +227,7 @@ export const OFFICE_THEME: ThemeConfig = {
   coffee: {
     trayTile: { x: 29, y: 15 },     // the sideboard (counter piece)
     trayStand: { x: 29, y: 16 },
+    machineTile: { x: 26, y: 17 },  // the machine on the counter (gid 313)
     machineStand: { x: 26, y: 20 }, // below the counter machine
     sinkTile: { x: 28, y: 18 },     // free counter top, right end
     sinkStand: { x: 28, y: 20 },
@@ -179,7 +236,12 @@ export const OFFICE_THEME: ThemeConfig = {
   anchors: {
     calendar: { x: 4, y: 1 },
     boards: { x: 6, y: 10 },
+    boardsPad: 15,                  // centres the ensemble on the wall run 6..12
+    boardStands: { pin: { x: 8, y: 11 }, take: { x: 9, y: 11 }, archive: { x: 12, y: 11 } },
     clock: { x: 1, y: 1 },
+    clockSize: { w: 16, h: 32 },    // gids 354 + 370: a two-tile wall clock
+    askMe: { x: 14, y: 10 },
+    askMePad: 25,
   },
   errandSpots: [
     // plants (droplets ride on the character via startWatering)
@@ -214,6 +276,15 @@ export const OFFICE_THEME: ThemeConfig = {
   palette: {
     background: colors.ink[900],
     noteColors: { todo: 0xf2df8a, doing: 0x9ecbf0, blocked: 0xf0a3a3, done: 0xa8e0b0 },
+    // Lifted verbatim from the inline hex in OfficeFloor's draw code, so the
+    // office floor is pixel-identical to before the extraction.
+    propStyle: {
+      frame: 0x6e5639, surface: 0xc9b083, noteFallback: 0xf2eddc, pin: 0x4a3b52,
+      pileBack: 0xe8e0c8, pileFront: 0xf2eddc,
+      page: 0xf2ead8, banner: 0xc94f4f, rings: 0xd8d3c4, grid: 0xb8ab90,
+      table: 0xb08d5e, tableShade: 0x8a6f4d, doneEdge: 0x6e8f6e,
+      askFrame: 0x5b4a6b, askAccent: 0xcdb4e8, askWatermark: 0x8a755f,
+    },
   },
   cast: {
     byName: CAST_BY_NAME as Record<string, CastMember>,
@@ -247,18 +318,27 @@ export const BROOKLYN99_THEME: ThemeConfig = {
     ['cafe-stand-coffee', 'coffee'],
     ['cafe-stand-vending', 'vending'],
   ],
+  // Authored onto the break-room counter the generator now paints at rows 18-19
+  // (x 30..33). Before that counter existed these tiles sat on bare floor, so
+  // the mug rack, the basin and the steam all drew over nothing.
   coffee: {
-    trayTile: { x: 33, y: 18 },
-    trayStand: { x: 33, y: 19 },
-    machineStand: { x: 30, y: 21 },
-    sinkTile: { x: 31, y: 18 },
-    sinkStand: { x: 31, y: 19 },
+    trayTile: { x: 33, y: 18 },     // counter top, right end
+    trayStand: { x: 33, y: 20 },
+    machineTile: { x: 30, y: 18 },  // the machine (gid 313) on the counter
+    machineStand: { x: 30, y: 20 }, // below it — same tile as cafe-stand-coffee
+    sinkTile: { x: 32, y: 18 },
+    sinkStand: { x: 32, y: 20 },
     maxCups: 4,
   },
   anchors: {
     calendar: { x: 4, y: 1 },   // briefing-room top wall → TRIGGERS
     boards: { x: 14, y: 1 },    // over the bullpen → TASKS
+    // The bullpen's north band is walkable, so the stands sit one row under the
+    // boards; each is positioned beneath the piece it serves.
+    boardStands: { pin: { x: 15, y: 2 }, take: { x: 18, y: 2 }, archive: { x: 20, y: 2 } },
     clock: { x: 1, y: 1 },      // top-left corner → CLOSING TIME
+    askMe: { x: 21, y: 1 },     // right of the boards, clear of the x=27 divider
+    askMePad: 25,
   },
   // Placeholder errand anchors authored to brooklyn99.tmj's open floor (verified
   // walkable against the map's collision layer + desk stamps). The godOnly spots
@@ -328,15 +408,29 @@ export const WIZARDSCHOOL_THEME: ThemeConfig = {
   coffee: {
     trayTile: { x: 30, y: 16 },     // the cup rack
     trayStand: { x: 30, y: 17 },
+    machineTile: { x: 32, y: 16 },  // the urn itself — steam rises here
     machineStand: { x: 32, y: 17 }, // below the urn
     sinkTile: { x: 34, y: 16 },     // the wash basin
     sinkStand: { x: 34, y: 17 },
     maxCups: 4,
   },
+  // The great hall's north wall is fully dressed — four house banners (x 6, 12,
+  // 18, 23), four arched windows (3-4, 9-10, 15-16, 21-22) and the open vault
+  // (7-8) — and every prop here hangs across wall rows 0.5..1.9, so anything
+  // wide would cover that art. Only the single-tile props go on it; the 82px
+  // board ensemble hangs in the common room instead, on the divider wall at
+  // row 12, which is exactly the wall a common-room notice board wants.
   anchors: {
-    calendar: { x: 5, y: 1 },   // north wall -> TRIGGERS
-    boards: { x: 19, y: 1 },    // north wall -> TASKS
+    calendar: { x: 13, y: 1 },  // plain wall between the banner and the window -> TRIGGERS
+    boards: { x: 28, y: 12 },   // the common room's north wall -> TASKS
+    boardsPad: 0,               // the run starts at the anchor; the office's 15 would overhang it
+    // Row 13, clear of the bookcase at x 26-27. Each stand sits under the piece
+    // it serves: blockers 28..29.9, todo 30.1..32, archive table 32.2..33.1.
+    boardStands: { pin: { x: 29, y: 13 }, take: { x: 31, y: 13 }, archive: { x: 32, y: 13 } },
     clock: { x: 1, y: 1 },      // -> CLOSING TIME
+    clockSize: { w: 16, h: 16 },// the castle atlas clock is a single tile
+    askMe: { x: 28, y: 1 },     // the classroom's undressed north wall -> ASK ME
+    askMePad: 0,
   },
   // Authored against wizardschool.tmj and asserted walkable by the map
   // generator's validator (tools/gen-wizardschool-map.cjs).
@@ -369,6 +463,16 @@ export const WIZARDSCHOOL_THEME: ThemeConfig = {
   palette: {
     background: 0x120f1c,
     noteColors: { todo: 0xe8d9a0, doing: 0x9fc4e8, blocked: 0xd9979b, done: 0xa3d4ae },
+    // Same geometry as the office boards, dressed as a castle notice board:
+    // dark oak instead of pine, parchment instead of cork, a wax seal instead of
+    // a red month banner, candle gold instead of lilac on the ASK ME board.
+    propStyle: {
+      frame: 0x3d2b1f, surface: 0xd9c9a3, noteFallback: 0xefe4c6, pin: 0x2a1d14,
+      pileBack: 0xd8caa6, pileFront: 0xefe4c6,
+      page: 0xe8d9a0, banner: 0x7a1f2b, rings: 0xb59a5e, grid: 0xb9a679,
+      table: 0x4a3526, tableShade: 0x33241a, doneEdge: 0x5f7a4f,
+      askFrame: 0x2b2145, askAccent: 0xc9a84c, askWatermark: 0x8a7752,
+    },
   },
   cast: {
     byName: WIZARD_CAST_BY_NAME,

@@ -107,6 +107,82 @@ for (const id of themeIds) {
     }
   });
 
+  // Flood fill from the entrance over the same 4-neighbourhood as
+  // scene/office/pathfinding.ts, with seats/stands force-walkable exactly as the
+  // runtime forces them. Walkable is not enough on its own: a tile can be clear
+  // and still be sealed off behind furniture.
+  const reachable = (() => {
+    const start = spawns.get('entrance');
+    const open = new Set();
+    const force = (t) => t && open.add(`${t.x},${t.y}`);
+    for (const n of [...theme.primarySeatNames, ...theme.cafeSeatNames]) force(spawns.get(n));
+    for (const [n] of theme.cafeStands) force(spawns.get(n));
+    const passable = (x, y) => x >= 0 && y >= 0 && x < map.width && y < map.height
+      && (walkable(x, y) || open.has(`${x},${y}`));
+    const seen = new Set([`${start.x},${start.y}`]);
+    const q = [start];
+    while (q.length) {
+      const { x, y } = q.shift();
+      for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+        if (!seen.has(`${nx},${ny}`) && passable(nx, ny)) { seen.add(`${nx},${ny}`); q.push({ x: nx, y: ny }); }
+      }
+    }
+    return (x, y) => seen.has(`${x},${y}`);
+  })();
+
+  test(`${id}: the board-choreography stands are walkable AND reachable`, () => {
+    // The bug this exists for: with no path, Character.walkToAndThen (Character.ts:189)
+    // drops the arrival callback, so the actor never walks, the boards never
+    // update, and the move sits in busyActors until the 30 s watchdog fires.
+    for (const [role, t] of Object.entries(theme.anchors.boardStands)) {
+      assert.ok(walkable(t.x, t.y), `${role} stand (${t.x},${t.y}) is inside collision`);
+      assert.ok(reachable(t.x, t.y), `${role} stand (${t.x},${t.y}) is walled off from the entrance`);
+    }
+  });
+
+  test(`${id}: every wall prop hangs on a wall`, () => {
+    // These are Graphics with no map art behind them, so a wrong anchor doesn't
+    // fail — it just floats a cork board over open floor with agents walking
+    // through it. A single-row perimeter (brooklyn99) puts the prop on the row
+    // under the wall, so either tile counts.
+    const onWall = (t) => tileAt('walls', t.x, t.y) !== 0
+      || (t.y > 0 && tileAt('walls', t.x, t.y - 1) !== 0);
+    for (const name of ['calendar', 'boards', 'clock', 'askMe']) {
+      const t = theme.anchors[name];
+      assert.ok(t, `anchors.${name} is missing`);
+      assert.ok(onWall(t), `anchors.${name} (${t.x},${t.y}) is over open floor, not a wall`);
+    }
+  });
+
+  test(`${id}: the clock anchor carries art and a matching hit area`, () => {
+    const c = theme.anchors.clock;
+    assert.notEqual(tileAt('furniture-above', c.x, c.y), 0,
+      `no art at anchors.clock (${c.x},${c.y}) — the closing-time prop would be an invisible click target`);
+    const box = theme.anchors.clockSize ?? { w: 16, h: 32 };
+    // A 2-tile hit area needs a second tile of clock under the first, or the
+    // lower half is dead space over whatever is below it.
+    if (box.h > 16) {
+      assert.notEqual(tileAt('furniture-above', c.x, c.y + 1), 0,
+        `clockSize is ${box.w}x${box.h} but (${c.x},${c.y + 1}) has no art`);
+    }
+  });
+
+  test(`${id}: the coffee economy has art under it and reachable stands`, () => {
+    // The tray, sink and steam are Graphics drawn OVER map art. With nothing
+    // beneath them, the mug rack and basin float on bare floor.
+    for (const k of ['trayTile', 'machineTile', 'sinkTile']) {
+      const t = theme.coffee[k];
+      assert.ok(t, `coffee.${k} is missing`);
+      assert.ok(tileAt('furniture-below', t.x, t.y) !== 0 || tileAt('furniture-above', t.x, t.y) !== 0,
+        `coffee.${k} (${t.x},${t.y}) has no art beneath it`);
+    }
+    for (const k of ['trayStand', 'machineStand', 'sinkStand']) {
+      const t = theme.coffee[k];
+      assert.ok(walkable(t.x, t.y), `coffee.${k} (${t.x},${t.y}) is inside collision`);
+      assert.ok(reachable(t.x, t.y), `coffee.${k} (${t.x},${t.y}) is walled off from the entrance`);
+    }
+  });
+
   test(`${id}: seats carry the monitor off block at (seat.x, seat.y - 2)`, () => {
     // OfficeFloor.tsx:1407 attaches a DeskScreen only on an exact gid match at
     // that exact offset. Zero matches means no seat in the theme ever lights up.
@@ -146,3 +222,29 @@ for (const id of themeIds) {
     }
   });
 }
+
+// ─── source guards: the props must stay theme-driven ─────────────────────────
+// Every assertion above reads ThemeConfig, so it is blind to a coordinate typed
+// straight into the scene. These two catch that: they are the reason the office's
+// (26,17) steam, (14,10) ASK ME board and (8,11) board stands survived a whole
+// theme extraction unnoticed.
+const OFFICE_FLOOR = fs.readFileSync(path.join(R, 'scene/office/OfficeFloor.tsx'), 'utf8');
+
+test('OfficeFloor positions no prop at a hardcoded tile coordinate', () => {
+  const hits = OFFICE_FLOOR.split('\n')
+    .map((line, i) => [i + 1, line])
+    .filter(([, line]) => /position\.set\(\s*\d+\s*\*/.test(line));
+  assert.deepEqual(hits, [], `hardcoded tile position(s): ${hits.map(([n, l]) => `L${n}: ${l.trim()}`).join(' | ')}`);
+});
+
+test('the clock hit area is derived from the theme, not a literal', () => {
+  // The assignment spans lines, so read the whole expression: a line-scoped
+  // check would only ever see `clockG.hitArea = {` and pass no matter what the
+  // extent below it said.
+  const at = OFFICE_FLOOR.indexOf('clockG.hitArea');
+  assert.notEqual(at, -1, 'clockG.hitArea vanished — update this guard');
+  const expr = OFFICE_FLOOR.slice(at, OFFICE_FLOOR.indexOf('};', at) + 2);
+  assert.match(expr, /clockBox/, `the clock hit area must come from anchors.clockSize: ${expr}`);
+  assert.doesNotMatch(expr, /<=\s*\d/,
+    `the clock hit area carries a literal extent, so it cannot match a theme whose clock is a different size: ${expr}`);
+});

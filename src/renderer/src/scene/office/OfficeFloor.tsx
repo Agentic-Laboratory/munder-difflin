@@ -296,6 +296,11 @@ export function OfficeFloor() {
       // selects Michael (the god) and opens the Command Center's TRIGGERS tab —
       // everything that wakes the hive without you, schedules first among them.
       const calTs = mapRenderer.tileSize;
+      // Colors for every Graphics-drawn prop below (calendar, task boards,
+      // archive table, ASK ME board). The shapes are shared across themes; only
+      // this palette changes, so a castle hangs parchment where the office hangs
+      // paper. See PropStyle in themeRegistry.
+      const PROP = theme.palette.propStyle;
       const calG = new Graphics();
       calG.eventMode = 'static';
       calG.cursor = 'pointer';
@@ -309,18 +314,18 @@ export function OfficeFloor() {
         st.requestCommandCenterTab('triggers');
       });
       // nail + ring binding above a white page with a red month header
-      calG.rect(7, -2, 2, 2).fill(0x4a3b52);                  // nail
-      calG.rect(0, 0, 16, 20).fill(0x4a3b52);                 // frame/shadow
-      calG.rect(1, 1, 14, 18).fill(0xf2ead8);                 // the page
-      calG.rect(1, 1, 14, 4).fill(0xc94f4f);                  // month banner
-      calG.rect(4, 0, 1, 2).fill(0xd8d3c4);                   // binding rings
-      calG.rect(11, 0, 1, 2).fill(0xd8d3c4);
+      calG.rect(7, -2, 2, 2).fill(PROP.pin);                  // nail
+      calG.rect(0, 0, 16, 20).fill(PROP.pin);                 // frame/shadow
+      calG.rect(1, 1, 14, 18).fill(PROP.page);                // the page
+      calG.rect(1, 1, 14, 4).fill(PROP.banner);               // month banner
+      calG.rect(4, 0, 1, 2).fill(PROP.rings);                 // binding rings
+      calG.rect(11, 0, 1, 2).fill(PROP.rings);
       for (let r = 0; r < 3; r++) {
         for (let c = 0; c < 5; c++) {
-          calG.rect(2 + c * 3, 7 + r * 4, 2, 2).fill(0xb8ab90); // day grid
+          calG.rect(2 + c * 3, 7 + r * 4, 2, 2).fill(PROP.grid); // day grid
         }
       }
-      calG.rect(8, 11, 2, 2).fill(0xc94f4f);                  // today, circled red
+      calG.rect(8, 11, 2, 2).fill(PROP.banner);               // today, circled red
       charLayer.addChild(calG);
 
       // Build the ordered seat list once: PC desks + named desks first, then
@@ -486,8 +491,11 @@ export function OfficeFloor() {
 
       const machineG = new Graphics(); // steam over the counter machine while brewing
       machineG.eventMode = 'none';
-      machineG.position.set(26 * ts0, 17 * ts0);
-      machineG.zIndex = 19 * ts0;
+      // The steam rises from the MACHINE, not from the tile an agent stands on:
+      // in the office those are three rows apart. zIndex sorts it in front of the
+      // counter run, one row above the stand.
+      machineG.position.set(theme.coffee.machineTile.x * ts0, theme.coffee.machineTile.y * ts0);
+      machineG.zIndex = (theme.coffee.machineStand.y - 1) * ts0;
       charLayer.addChild(machineG);
       let machineBusy = 0;
       const drawMachine = (t: number): void => {
@@ -1017,9 +1025,10 @@ export function OfficeFloor() {
       // stack on the little table at the end. Clicking any of it selects
       // Michael and opens the Command Center's tasks tab.
       const BOARD_TILE: Tile = theme.anchors.boards;
-      // The ensemble (two boards + archive table) is 82px wide; the wall run
-      // between the two doorways spans tiles 6..12 (112px) — center it.
-      const BOARD_CENTER_PAD = 15;
+      // The ensemble (two boards + archive table) is 82px wide; in the office the
+      // wall run between the two doorways spans tiles 6..12 (112px), so it needs
+      // centering. A theme whose run starts exactly at its anchor passes 0.
+      const BOARD_CENTER_PAD = theme.anchors.boardsPad ?? 15;
       const NOTE_COLORS: Record<string, number> = theme.palette.noteColors;
       interface BoardTask { status: string; assignee?: string }
       const tsB = mapRenderer.tileSize;
@@ -1046,19 +1055,19 @@ export function OfficeFloor() {
       /** One cork board with a colored header at local x `ox`; draws up to 12
        *  of `notes`, overflow as a corner pile. */
       const drawCork = (ox: number, header: number, notes: string[]): void => {
-        boardG.rect(ox, -8, 30, 22).fill(0x6e5639);        // frame
-        boardG.rect(ox + 1, -7, 28, 3).fill(header);       // header strip
-        boardG.rect(ox + 1, -4, 28, 17).fill(0xc9b083);    // cork
+        boardG.rect(ox, -8, 30, 22).fill(PROP.frame);       // frame
+        boardG.rect(ox + 1, -7, 28, 3).fill(header);        // header strip
+        boardG.rect(ox + 1, -4, 28, 17).fill(PROP.surface); // cork
         const n = Math.min(notes.length, 12);
         for (let i = 0; i < n; i++) {
           const x = ox + 3 + (i % 4) * 7;
           const y = -2 + Math.floor(i / 4) * 5;
-          boardG.rect(x, y, 5, 4).fill(NOTE_COLORS[notes[i]] ?? 0xf2eddc);
-          boardG.rect(x + 2, y, 1, 1).fill(0x4a3b52);      // pin
+          boardG.rect(x, y, 5, 4).fill(NOTE_COLORS[notes[i]] ?? PROP.noteFallback);
+          boardG.rect(x + 2, y, 1, 1).fill(PROP.pin);       // pin
         }
         if (notes.length > 12) {
-          boardG.rect(ox + 22, 8, 5, 4).fill(0xe8e0c8);
-          boardG.rect(ox + 23, 7, 5, 4).fill(0xf2eddc);
+          boardG.rect(ox + 22, 8, 5, 4).fill(PROP.pileBack);
+          boardG.rect(ox + 23, 7, 5, 4).fill(PROP.pileFront);
         }
       };
 
@@ -1090,21 +1099,21 @@ export function OfficeFloor() {
           const idx = (g as any).__count ?? 0;
           (g as any).__count = idx + 1;
           g.rect(idx * 7, -(idx % 2), 5, 4).fill(NOTE_COLORS.doing);
-          g.rect(idx * 7 + 2, -(idx % 2), 1, 1).fill(0x4a3b52);
+          g.rect(idx * 7 + 2, -(idx % 2), 1, 1).fill(PROP.pin);
         }
         drawCork(0, NOTE_COLORS.blocked, blocked);   // left: what's burning
         drawCork(34, NOTE_COLORS.todo, todoNotes);   // right: what's queued
         // The archive table: every finished task adds a green sheet to the
         // pile (visible stack capped at 6 — beyond that it just sits proud).
-        boardG.rect(68, 6, 14, 4).fill(0xb08d5e);    // table top
-        boardG.rect(68, 10, 14, 4).fill(0x8a6f4d);   // table front
-        boardG.rect(69, 14, 2, 2).fill(0x6e5639);    // legs
-        boardG.rect(79, 14, 2, 2).fill(0x6e5639);
+        boardG.rect(68, 6, 14, 4).fill(PROP.table);      // table top
+        boardG.rect(68, 10, 14, 4).fill(PROP.tableShade); // table front
+        boardG.rect(69, 14, 2, 2).fill(PROP.frame);      // legs
+        boardG.rect(79, 14, 2, 2).fill(PROP.frame);
         const stack = Math.min(done, 6);
         for (let i = 0; i < stack; i++) {
           boardG.rect(71 + (i % 2), 4 - i * 2, 8, 2)
             .fill({ color: NOTE_COLORS.done, alpha: 1 })
-            .stroke({ color: 0x6e8f6e, width: 0.5 });
+            .stroke({ color: PROP.doneEdge, width: 0.5 });
         }
       };
       drawTaskBoard([]);
@@ -1118,7 +1127,13 @@ export function OfficeFloor() {
       clockG.eventMode = 'static';
       clockG.cursor = 'pointer';
       clockG.position.set(theme.anchors.clock.x * ts0, theme.anchors.clock.y * ts0);
-      clockG.hitArea = { contains: (x: number, y: number) => x >= 0 && x <= 16 && y >= 0 && y <= 32 };
+      // The art is a map tile, so the hit area has to match THIS theme's clock:
+      // the office's is a two-tile sprite, the castle's a single tile, and the
+      // default would leave 16px of dead click area over the tile below it.
+      const clockBox = theme.anchors.clockSize ?? { w: 16, h: 32 };
+      clockG.hitArea = {
+        contains: (x: number, y: number) => x >= 0 && x <= clockBox.w && y >= 0 && y <= clockBox.h,
+      };
       clockG.zIndex = 3 * ts0;
       clockG.on('pointertap', (ev) => {
         ev.stopPropagation();
@@ -1135,8 +1150,9 @@ export function OfficeFloor() {
       const askG = new Graphics();
       askG.eventMode = 'static';
       askG.cursor = 'pointer';
-      askG.position.set(14 * tsB + 25, 10 * tsB);
-      askG.zIndex = 11 * tsB;
+      const ASK_TILE: Tile = theme.anchors.askMe;
+      askG.position.set(ASK_TILE.x * tsB + (theme.anchors.askMePad ?? 25), ASK_TILE.y * tsB);
+      askG.zIndex = (ASK_TILE.y + 1) * tsB;
       askG.on('pointertap', (ev) => {
         ev.stopPropagation();
         const st = useStore.getState();
@@ -1150,25 +1166,25 @@ export function OfficeFloor() {
       const drawAskBoard = (pulse: number): void => {
         askG.clear();
         // lilac-framed board with a big "?" identity
-        askG.rect(0, -8, 30, 22).fill(0x5b4a6b);
-        askG.rect(1, -7, 28, 3).fill(0xcdb4e8);
-        askG.rect(1, -4, 28, 17).fill(0xc9b083);
+        askG.rect(0, -8, 30, 22).fill(PROP.askFrame);
+        askG.rect(1, -7, 28, 3).fill(PROP.askAccent);
+        askG.rect(1, -4, 28, 17).fill(PROP.surface);
         if (askCount === 0) {
           // quiet: a faint "?" watermark
-          askG.rect(13, -1, 4, 2).fill({ color: 0x8a755f, alpha: 0.8 });
-          askG.rect(15, 1, 2, 4).fill({ color: 0x8a755f, alpha: 0.8 });
-          askG.rect(15, 7, 2, 2).fill({ color: 0x8a755f, alpha: 0.8 });
+          askG.rect(13, -1, 4, 2).fill({ color: PROP.askWatermark, alpha: 0.8 });
+          askG.rect(15, 1, 2, 4).fill({ color: PROP.askWatermark, alpha: 0.8 });
+          askG.rect(15, 7, 2, 2).fill({ color: PROP.askWatermark, alpha: 0.8 });
         } else {
           const n = Math.min(askCount, 8);
           for (let i = 0; i < n; i++) {
             const x = 3 + (i % 4) * 7;
             const y = -2 + Math.floor(i / 4) * 6;
-            askG.rect(x, y, 5, 4).fill(0xcdb4e8);
-            askG.rect(x + 2, y, 1, 1).fill(0x4a3b52);
+            askG.rect(x, y, 5, 4).fill(PROP.askAccent);
+            askG.rect(x + 2, y, 1, 1).fill(PROP.pin);
           }
           // attention pulse around the frame while questions wait
           const a = 0.35 + 0.3 * Math.sin(pulse * 4);
-          askG.rect(-2, -10, 34, 26).stroke({ color: 0xcdb4e8, width: 2, alpha: a });
+          askG.rect(-2, -10, 34, 26).stroke({ color: PROP.askAccent, width: 2, alpha: a });
         }
       };
       drawAskBoard(0);
@@ -1192,9 +1208,12 @@ export function OfficeFloor() {
         stand: Tile;
         thought: string;
       }
-      const PIN_STAND: Tile = { x: 8, y: 11 };      // under the blockers board
-      const TAKE_STAND: Tile = { x: 9, y: 11 };     // under the todo board
-      const ARCHIVE_STAND: Tile = { x: 12, y: 11 }; // beside the archive table
+      // Per theme, and asserted walkable + reachable by the contract test: an
+      // unreachable stand gives findPath nothing, walkToAndThen drops the arrival
+      // callback, and the move sits in busyActors until the 30 s watchdog.
+      const PIN_STAND: Tile = theme.anchors.boardStands.pin;         // under the blockers board
+      const TAKE_STAND: Tile = theme.anchors.boardStands.take;       // under the todo board
+      const ARCHIVE_STAND: Tile = theme.anchors.boardStands.archive; // beside the archive table
       /** What the boards currently SHOW (lags the ledger while moves play). */
       let visualTasks = new Map<string, BoardTask>();
       const moveQueue: BoardMove[] = [];
@@ -1223,7 +1242,7 @@ export function OfficeFloor() {
         const g = new Graphics();
         g.eventMode = 'none';
         g.rect(0, 0, 5, 4).fill(color);
-        g.rect(2, 0, 1, 1).fill(0x4a3b52);
+        g.rect(2, 0, 1, 1).fill(PROP.pin);
         charLayer.addChild(g);
         carriedNotes.set(actorId, g);
       };

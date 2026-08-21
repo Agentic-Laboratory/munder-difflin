@@ -91,11 +91,39 @@ const CAFE = {
   'cafe-seat-3': { x: 32, y: 14 }, 'cafe-seat-4': { x: 32, y: 16 },
   'cafe-stand-coffee': { x: 30, y: 20 }, 'cafe-stand-vending': { x: 33, y: 12 },
 };
-// Coffee-economy tiles (Graphics draw cups/sink here; stands must stay walkable).
+// The break-room counter. The coffee economy's Graphics draw a mug rack, a steel
+// basin and steam OVER map art — with nothing painted here they floated on bare
+// floor, which is how this map shipped. Office-tileset counter pieces: 38/39/40
+// on top, 54/55/56 for the front, machine 313.
+const COUNTER = { y: 18, x0: 30, top: [38, 39, 39, 40], front: [54, 55, 55, 56] };
+for (let i = 0; i < COUNTER.top.length; i++) {
+  const x = COUNTER.x0 + i;
+  set('below', x, COUNTER.y, COUNTER.top[i]); set('coll', x, COUNTER.y, 1);
+  set('below', x, COUNTER.y + 1, COUNTER.front[i]); set('coll', x, COUNTER.y + 1, 1);
+}
+set('above', COUNTER.x0, COUNTER.y, 313);   // the machine, left end of the run
+
+// Coffee-economy tiles: `*Tile` is the object on the counter, `*Stand` the
+// walkable tile two rows below it (the office's own spacing).
 const COFFEE = {
-  trayTile: { x: 33, y: 18 }, trayStand: { x: 33, y: 19 },
-  machineStand: { x: 30, y: 21 }, sinkTile: { x: 31, y: 18 }, sinkStand: { x: 31, y: 19 },
+  trayTile: { x: 33, y: 18 }, trayStand: { x: 33, y: 20 },
+  machineTile: { x: 30, y: 18 }, machineStand: { x: 30, y: 20 },
+  sinkTile: { x: 32, y: 18 }, sinkStand: { x: 32, y: 20 },
 };
+
+// Clickable prop anchors, mirroring BROOKLYN99_THEME.anchors. This map has a
+// single-row perimeter wall, so the props hang on row 1 with the wall above
+// them. The clock is a two-tile sprite (354/370) and carries the quit flow, so
+// without art here the click target would be invisible.
+const PROPS = {
+  clock: { x: 1, y: 1 }, calendar: { x: 4, y: 1 },
+  boards: { x: 14, y: 1 }, askMe: { x: 21, y: 1 },
+  boardStands: [{ x: 15, y: 2 }, { x: 18, y: 2 }, { x: 20, y: 2 }],
+};
+set('above', PROPS.clock.x, PROPS.clock.y, 354);
+set('above', PROPS.clock.x, PROPS.clock.y + 1, 370);
+set('coll', PROPS.clock.x, PROPS.clock.y, 1);
+set('coll', PROPS.clock.x, PROPS.clock.y + 1, 1);
 
 // ── 6. spawn-points + zones ──────────────────────────────────────────────────
 const spawnObjs = [];
@@ -133,6 +161,9 @@ const targets = [
   ...Object.entries(SEATS).map(([n, t]) => [n, t]),
   ...Object.entries(CAFE).map(([n, t]) => [n, t]),
   ...Object.entries(COFFEE).map(([n, t]) => [`coffee:${n}`, t]),
+  // A board stand an actor cannot reach leaves findPath with nothing, and the
+  // note-carrying choreography hangs until OfficeFloor's 30 s watchdog.
+  ...PROPS.boardStands.map((t, i) => [`boardStand#${i}`, t]),
   ['entrance', ENTRANCE],
 ];
 const unreachable = targets.filter(([, t]) => !(inb(t.x, t.y) && seen[t.y][t.x]));
@@ -140,11 +171,25 @@ const unreachable = targets.filter(([, t]) => !(inb(t.x, t.y) && seen[t.y][t.x])
 const noApproach = Object.entries(SEATS).filter(([, s]) =>
   ![[s.x, s.y + 1], [s.x, s.y - 1], [s.x + 1, s.y], [s.x - 1, s.y]]
     .some(([ax, ay]) => inb(ax, ay) && walk[ay][ax] && seen[ay] && seen[ay][ax]));
+// Props hang ON a wall (or on the row directly under one — this map's perimeter
+// is a single row). A prop over open floor floats in mid-air.
+const floatingProp = Object.entries(PROPS)
+  .filter(([n]) => n !== 'boardStands')
+  .filter(([, t]) => !(L.walls[idx(t.x, t.y)] || (t.y > 0 && L.walls[idx(t.x, t.y - 1)])));
+const unwalkableStand = PROPS.boardStands.filter((t) => !walk[t.y][t.x]);
+const noClockArt = !L.above[idx(PROPS.clock.x, PROPS.clock.y)];
+const bareCoffee = ['trayTile', 'machineTile', 'sinkTile']
+  .filter((k) => !(L.below[idx(COFFEE[k].x, COFFEE[k].y)] || L.above[idx(COFFEE[k].x, COFFEE[k].y)]));
 
-if (unreachable.length || noApproach.length) {
+if (unreachable.length || noApproach.length || floatingProp.length
+    || unwalkableStand.length || noClockArt || bareCoffee.length) {
   console.error('VALIDATION FAILED');
   if (unreachable.length) console.error('  unreachable:', unreachable.map(([n]) => n).join(', '));
   if (noApproach.length) console.error('  no walkable approach:', noApproach.map(([n]) => n).join(', '));
+  if (floatingProp.length) console.error('  prop not on a wall:', floatingProp.map(([n]) => n).join(', '));
+  if (unwalkableStand.length) console.error('  board stand inside collision:', JSON.stringify(unwalkableStand));
+  if (noClockArt) console.error('  no clock art at anchors.clock — the quit prop would be invisible');
+  if (bareCoffee.length) console.error('  coffee object tile with no art beneath it:', bareCoffee.join(', '));
   process.exit(1);
 }
 
@@ -173,4 +218,4 @@ const map = {
 fs.writeFileSync(OUT, JSON.stringify(map));
 const seats = Object.keys(SEATS).length, cafe = Object.keys(CAFE).length;
 console.log(`OK wrote ${path.relative(path.join(__dirname, '..'), OUT)} — ${W}x${H}, ${seats} desks, ${cafe} café spawns, zones: boardroom/cafeteria/holding`);
-console.log('   validation: all seats/stands/spawns reachable from entrance ✓');
+console.log('   validation: reachability, seat approach, prop anchors, board stands, coffee art all OK');
