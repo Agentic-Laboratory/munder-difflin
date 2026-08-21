@@ -505,7 +505,10 @@ export const WIZARDSCHOOL_THEME: ThemeConfig = {
     ],
   },
   palette: {
-    background: 0x120f1c,
+    // Warm dark brown, not the near-black violet this started as. It is the
+    // canvas clear colour, so it frames every edge of the hall — a cool value
+    // there read as a crypt no matter how warm the stone got.
+    background: 0x1f1711,
     noteColors: { todo: 0xe8d9a0, doing: 0x9fc4e8, blocked: 0xd9979b, done: 0xa3d4ae },
     // Same geometry as the office boards, dressed as a castle notice board:
     // dark oak instead of pine, parchment instead of cork, a wax seal instead of
@@ -515,7 +518,9 @@ export const WIZARDSCHOOL_THEME: ThemeConfig = {
       pileBack: 0xd8caa6, pileFront: 0xefe4c6,
       page: 0xe8d9a0, banner: 0x7a1f2b, rings: 0xb59a5e, grid: 0xb9a679,
       table: 0x4a3526, tableShade: 0x33241a, doneEdge: 0x5f7a4f,
-      askFrame: 0x2b2145, askAccent: 0xc9a84c, askWatermark: 0x8a7752,
+      // Dark oak like the archive table, not the indigo-violet it was — that one
+      // frame was carrying a lot of the goth read all by itself.
+      askFrame: 0x46301f, askAccent: 0xc9a84c, askWatermark: 0x8a7752,
     },
   },
   cast: {

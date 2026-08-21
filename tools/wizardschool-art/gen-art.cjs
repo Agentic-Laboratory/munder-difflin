@@ -88,17 +88,29 @@ const lt = (c, d) => [Math.min(255, c[0] + d), Math.min(255, c[1] + d), Math.min
 const dk = (c, d) => [Math.max(0, c[0] - d), Math.max(0, c[1] - d), Math.max(0, c[2] - d)];
 
 const P = {
-  stone: [104, 102, 116], stoneSh: [78, 76, 92], stoneHi: [128, 126, 142], stoneDk: [58, 56, 70],
-  mortar: [46, 44, 58],
+  // The masonry ramps are WARM (R > G > B) — honey sandstone lit by candles, not
+  // slate. They were originally cool blue-greys, which made the hall read as a
+  // crypt: every warm thing in the room (banners, candelabra, the aisle carpet,
+  // the oak tables) was fighting the walls instead of sitting in them. The night
+  // sky, the window glass and the ambient `glow` stay cool on purpose — the
+  // contrast against warm stone is what sells candlelight, and warming those too
+  // turns the whole atlas orange and kills the enchanted ceiling.
+  stone: [138, 116, 90], stoneSh: [106, 86, 64], stoneHi: [166, 144, 114], stoneDk: [80, 64, 47],
+  mortar: [66, 52, 39],
   // Vertical masonry is a separate, darker ramp from the floor paving. With one
-  // shared grey the wall line vanishes into the floor and the room loses its edges.
-  wall: [74, 72, 90], wallSh: [54, 52, 68], wallHi: [96, 94, 114],
-  wallDk: [40, 38, 52], wallJoint: [30, 28, 42],
-  slate: [70, 72, 88], slateSh: [52, 54, 66], slateHi: [92, 94, 110],
-  warm: [122, 112, 108], warmHi: [146, 134, 126], warmSh: [94, 84, 82],
+  // shared tone the wall line vanishes into the floor and the room loses its edges.
+  wall: [112, 92, 69], wallSh: [86, 68, 50], wallHi: [136, 114, 88],
+  wallDk: [66, 52, 39], wallJoint: [49, 38, 28],
+  // The east rooms (potions classroom, common room) are floored in slate rather
+  // than the hall's paving, so it must stay a DIFFERENT material — but in the
+  // same warm family, or the two halves of the castle read as two buildings.
+  slate: [112, 96, 80], slateSh: [86, 72, 58], slateHi: [136, 118, 100],
+  warm: [142, 120, 102], warmHi: [170, 148, 128], warmSh: [110, 90, 74],
   wood: [122, 82, 52], woodSh: [92, 60, 38], woodHi: [150, 106, 68], oak: [80, 52, 34],
   gold: [214, 176, 84], goldSh: [168, 132, 54], goldHi: [240, 214, 138],
-  iron: [90, 92, 104], ironSh: [64, 66, 78], ironHi: [126, 128, 142],
+  // Warm-neutral rather than blue-grey: sconces and hinges sit ON the honey
+  // stone, and a cool iron read as a second, competing grey against it.
+  iron: [96, 88, 82], ironSh: [70, 63, 58], ironHi: [130, 122, 114],
   flame: [246, 186, 74], flameHi: [255, 236, 168], flameSh: [214, 112, 42],
   night: [26, 28, 54], nightHi: [48, 52, 92], star: [236, 232, 196],
   crimson: [138, 34, 44], crimsonSh: [98, 20, 30], crimsonHi: [176, 58, 62],
