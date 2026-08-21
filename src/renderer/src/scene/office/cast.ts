@@ -14,9 +14,12 @@ export type OfficeCharacterName =
   | 'oscar' | 'stanley' | 'phyllis' | 'andy' | 'kelly' | 'ryan'
   | 'toby' | 'creed' | 'meredith';
 
-/** The Wizarding School roster. Original characters: archetypes the genre shares
- *  (a headmaster, a potions master, a groundskeeper, four house students), not
- *  anyone's named characters. Same for the four houses below. */
+/** The Wizarding School roster. The internal ids below (`sable`, `ashcroft`,
+ *  etc.) stay generic — they're stored in live user data and must never be
+ *  renamed. The DISPLAY names shown to the user are the actual Harry Potter
+ *  cast (Dumbledore, McGonagall, Harry, ...) and the houses are the real
+ *  Gryffindor / Slytherin / Ravenclaw / Hufflepuff. This is a personal/local
+ *  labelling choice, not a claim that the ids themselves mean anything. */
 export type WizardCharacterName =
   | 'sable' | 'ashcroft' | 'bane' | 'bramble' | 'thorne'
   | 'quill' | 'rowan' | 'cassius' | 'lark' | 'barnaby';
@@ -57,16 +60,16 @@ export const OFFICE_CAST: CastMember[] = [
 /** Wizarding School cast. `shirt` is the in-scene selection glow — house colour
  *  for students, robe colour for staff. */
 export const WIZARD_CAST: CastMember[] = [
-  { name: 'sable',    displayName: 'Sable',    shirt: '#5a6bb0', blurb: 'Headmaster' },
-  { name: 'ashcroft', displayName: 'Ashcroft', shirt: '#3a8a62', blurb: 'Deputy head, transfiguration' },
-  { name: 'bane',     displayName: 'Bane',     shirt: '#4a4658', blurb: 'Potions master' },
-  { name: 'bramble',  displayName: 'Bramble',  shirt: '#8a6440', blurb: 'Groundskeeper' },
-  { name: 'thorne',   displayName: 'Thorne',   shirt: '#8a222c', blurb: 'Emberwing, the marked one' },
-  { name: 'quill',    displayName: 'Quill',    shirt: '#a8323c', blurb: 'Emberwing, top of the class' },
-  { name: 'rowan',    displayName: 'Rowan',    shirt: '#c2603a', blurb: 'Emberwing, loyal to a fault' },
-  { name: 'cassius',  displayName: 'Cassius',  shirt: '#1e563a', blurb: 'Nightthistle, and never lets you forget' },
-  { name: 'lark',     displayName: 'Lark',     shirt: '#2a427c', blurb: 'Skyquill, elsewhere mostly' },
-  { name: 'barnaby',  displayName: 'Barnaby',  shirt: '#be8428', blurb: 'Goldbriar, herbology' },
+  { name: 'sable',    displayName: 'Dumbledore', shirt: '#5a6bb0', blurb: 'Headmaster' },
+  { name: 'ashcroft', displayName: 'McGonagall', shirt: '#3a8a62', blurb: 'Deputy head, transfiguration' },
+  { name: 'bane',     displayName: 'Snape',      shirt: '#4a4658', blurb: 'Potions master' },
+  { name: 'bramble',  displayName: 'Hagrid',     shirt: '#8a6440', blurb: 'Groundskeeper' },
+  { name: 'thorne',   displayName: 'Harry',      shirt: '#8a222c', blurb: 'Gryffindor, the boy who lived' },
+  { name: 'quill',    displayName: 'Hermione',   shirt: '#a8323c', blurb: 'Gryffindor, top of the class' },
+  { name: 'rowan',    displayName: 'Ron',        shirt: '#c2603a', blurb: 'Gryffindor, loyal to a fault' },
+  { name: 'cassius',  displayName: 'Draco',      shirt: '#1e563a', blurb: 'Slytherin, and never lets you forget' },
+  { name: 'lark',     displayName: 'Luna',       shirt: '#2a427c', blurb: 'Ravenclaw, elsewhere mostly' },
+  { name: 'barnaby',  displayName: 'Neville',    shirt: '#8f2f38', blurb: 'Gryffindor, herbology' },
 ];
 
 /** Every character across every theme. Use this to RESOLVE a stored character —

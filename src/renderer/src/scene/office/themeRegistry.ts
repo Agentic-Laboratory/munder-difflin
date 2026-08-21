@@ -431,10 +431,10 @@ export const WIZARDSCHOOL_THEME: ThemeConfig = {
   ],
   primarySeatNames: [
     'desk-ceo',                                                    // the high table
-    'pc-1', 'pc-2', 'pc-3', 'pc-4',                                // Emberwing
-    'pc-5', 'pc-6', 'pc-7', 'pc-8',                                // Nightthistle
-    'pc-9', 'pc-10', 'pc-11', 'pc-12',                             // Skyquill
-    'pc-13', 'pc-14', 'pc-15', 'pc-16',                            // Goldbriar
+    'pc-1', 'pc-2', 'pc-3', 'pc-4',                                // Gryffindor
+    'pc-5', 'pc-6', 'pc-7', 'pc-8',                                // Slytherin
+    'pc-9', 'pc-10', 'pc-11', 'pc-12',                             // Ravenclaw
+    'pc-13', 'pc-14', 'pc-15', 'pc-16',                            // Hufflepuff
   ],
   cafeSeatNames: ['cafe-seat-1', 'cafe-seat-2', 'cafe-seat-3', 'cafe-seat-4'],
   cafeStands: [

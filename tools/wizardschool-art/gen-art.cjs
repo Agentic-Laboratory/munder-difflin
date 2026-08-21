@@ -408,13 +408,13 @@ function banner(cv, x, y, part, cloth, trim, crest) {
     cv.set(x + 7, y + 14, P.goldHi); cv.set(x + 8, y + 14, P.goldHi);
   }
 }
-TILES[48] = (cv, x, y) => banner(cv, x, y, 'T', P.crimson, P.gold, 'wing');      // Emberwing
+TILES[48] = (cv, x, y) => banner(cv, x, y, 'T', P.crimson, P.gold, 'wing');      // Gryffindor
 TILES[49] = (cv, x, y) => banner(cv, x, y, 'B', P.crimson, P.gold);
-TILES[50] = (cv, x, y) => banner(cv, x, y, 'T', P.green, P.silver, 'thistle');   // Nightthistle
+TILES[50] = (cv, x, y) => banner(cv, x, y, 'T', P.green, P.silver, 'thistle');   // Slytherin
 TILES[51] = (cv, x, y) => banner(cv, x, y, 'B', P.green, P.silver);
-TILES[52] = (cv, x, y) => banner(cv, x, y, 'T', P.blue, P.bronze, 'quill');      // Skyquill
+TILES[52] = (cv, x, y) => banner(cv, x, y, 'T', P.blue, P.bronze, 'quill');      // Ravenclaw
 TILES[53] = (cv, x, y) => banner(cv, x, y, 'B', P.blue, P.bronze);
-TILES[54] = (cv, x, y) => banner(cv, x, y, 'T', P.amber, P.oak, 'briar');        // Goldbriar
+TILES[54] = (cv, x, y) => banner(cv, x, y, 'T', P.amber, P.oak, 'briar');        // Hufflepuff
 TILES[55] = (cv, x, y) => banner(cv, x, y, 'B', P.amber, P.oak);
 TILES[56] = (cv, x, y) => { cv.rect(x, y, 16, 3, P.gold); cv.hline(x, x + 15, y, P.goldHi); cv.hline(x, x + 15, y + 2, P.goldSh); };
 TILES[57] = (cv, x, y) => { // house-points hourglass

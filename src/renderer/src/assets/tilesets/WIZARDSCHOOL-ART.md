@@ -4,7 +4,9 @@
 
 ## Licence
 
-Every pixel in `wizardschool-castle.png` is authored from scratch by the generator (pure Node `zlib`, zero dependencies). Nothing is copied, traced or recoloured from another tileset, and the theme takes no names or likenesses from any published work: the school, its four houses and its ten characters are original. This atlas therefore carries **no third-party licence** and none of the non-commercial restriction that applies to the vendored LimeZu art in `ATTRIBUTION.md`.
+Every pixel in `wizardschool-castle.png` is authored from scratch by the generator (pure Node `zlib`, zero dependencies). Nothing is copied, traced or recoloured from another tileset, so this atlas carries **no third-party licence** and none of the non-commercial restriction that applies to the vendored LimeZu art in `ATTRIBUTION.md`. No tile depicts anyone's likeness.
+
+The *art* is original; the **names are not**. This fork labels the four houses and the ten characters with the real Harry Potter cast — a local naming choice for our own build, not original writing, and not something to carry upstream without the rights holder's blessing. The internal character ids (`sable`, `ashcroft`, …) stay generic because they are persisted in live user data and must never be renamed; only the display names borrow.
 
 The map does still reference two LimeZu pieces from the embedded office atlas, so the restriction in `ATTRIBUTION.md` continues to apply to the theme as a whole:
 
@@ -13,7 +15,7 @@ The map does still reference two LimeZu pieces from the embedded office atlas, s
 | Wooden bookcase, 2x2 | 153, 154 / 169, 170 | Classroom and common room |
 | Armchairs | 257, 259 | Common room, facing the hearth |
 
-Replacing those two with generated equivalents is all that stands between this theme and being fully licence-clean.
+Replacing those two with generated equivalents is all that stands between this theme's *art* and being fully licence-clean. The borrowed display names are a separate question — see Licence above.
 
 ## Atlas format
 
@@ -41,7 +43,7 @@ Local indices, row-major. Blanks are reserved for later additions.
 | 2 | 32-35 | Arched window, 2x2 (TL, TR, BL, BR) |
 | 2 | 36-39 | Stained-glass window, 2x2 |
 | 2 | 40-46 | Doorway arch L/R; oak door L/R; portcullis; dark passage; arrow slit |
-| 3 | 48-55 | House banners, 2 tiles each: Emberwing, Nightthistle, Skyquill, Goldbriar |
+| 3 | 48-55 | House banners, 2 tiles each: Gryffindor, Slytherin, Ravenclaw, Hufflepuff |
 | 3 | 56-59 | Banner rail; house-points hourglass; tapestry top / bottom |
 | 4 | 64-68 | Wall torch; candelabra top / base; floating candles; brazier |
 | 4 | 69-71 | Hearth left jamb / fire / right jamb |

@@ -564,8 +564,8 @@ const RECIPES: Record<CharacterName, Recipe> = {
 
   // ── Wizarding School ───────────────────────────────────────────────────────
   // Staff wear their own robe colours; students wear a dark robe with their
-  // house colour as the scarf (`tie`): Emberwing crimson, Nightthistle green,
-  // Skyquill blue, Goldbriar amber.
+  // house colour as the scarf (`tie`): Gryffindor crimson, Slytherin green,
+  // Ravenclaw blue, Hufflepuff amber.
   sable:    { skin: 'light', hairc: [214, 210, 200], hair: 'styleMessy', hairargs: { length: 17, vol: 2 }, cloth: 'robe', c1: [38, 44, 84], c2: [232, 230, 220], facial: 'beardLong', glasses: true, brow: 'soft', mouth: 'smile' },
   ashcroft: { skin: 'brown', hairc: [44, 36, 32],   hair: 'styleBun',    cloth: 'robe', c1: [28, 66, 52], c2: [226, 224, 216], brow: 'flat', mouth: 'neutral', lashes: true },
   bane:     { skin: 'light', hairc: [24, 22, 26],   hair: 'styleFrame',  hairargs: { length: 17, vol: 1 }, cloth: 'robe', c1: [28, 26, 34], c2: [40, 38, 48], brow: 'angry', mouth: 'frown' },
@@ -575,7 +575,7 @@ const RECIPES: Record<CharacterName, Recipe> = {
   rowan:    { skin: 'light', hairc: [186, 96, 44],  hair: 'styleShort',  hairargs: { part: 'R' }, cloth: 'robe', c1: [56, 54, 74], c2: [232, 230, 220], tie: [150, 40, 50], brow: 'soft', mouth: 'grin' },
   cassius:  { skin: 'light', hairc: [222, 210, 168], hair: 'styleShort', hairargs: { part: 'L' }, cloth: 'robe', c1: [52, 52, 68], c2: [222, 226, 232], tie: [34, 96, 64], brow: 'angry', mouth: 'frown' },
   lark:     { skin: 'light', hairc: [226, 214, 176], hair: 'styleFrame', hairargs: { length: 19, vol: 2 }, cloth: 'robe', c1: [56, 54, 74], c2: [232, 230, 220], tie: [48, 76, 140], brow: 'raised', mouth: 'smile', lashes: true },
-  barnaby:  { skin: 'dark',  hairc: [42, 34, 30],   hair: 'styleShort',  cloth: 'robe', c1: [56, 54, 74], c2: [232, 230, 220], tie: [190, 132, 40], brow: 'soft', mouth: 'neutral' },
+  barnaby:  { skin: 'dark',  hairc: [42, 34, 30],   hair: 'styleShort',  cloth: 'robe', c1: [56, 54, 74], c2: [232, 230, 220], tie: [150, 40, 50], brow: 'soft', mouth: 'neutral' },
 };
 
 /** The face/hair group (head → face → facial hair → hair → glasses), no clothing. */

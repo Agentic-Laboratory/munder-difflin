@@ -110,10 +110,10 @@ const win = (x) => {
 };
 [3, 9, 15, 21].forEach(win);
 const banner = (x, t, b) => { set('walls', x, 1, C(t)); set('walls', x, 2, C(b)); };
-banner(6, T.bannerET, T.bannerEB);      // Emberwing
-banner(12, T.bannerNT, T.bannerNB);     // Nightthistle
-banner(18, T.bannerST, T.bannerSB);     // Skyquill
-banner(23, T.bannerGT, T.bannerGB);     // Goldbriar
+banner(6, T.bannerET, T.bannerEB);      // Gryffindor
+banner(12, T.bannerNT, T.bannerNB);     // Slytherin
+banner(18, T.bannerST, T.bannerSB);     // Ravenclaw
+banner(23, T.bannerGT, T.bannerGB);     // Hufflepuff
 set('walls', 7, 1, C(T.skyB)); set('walls', 7, 2, C(T.skyA));   // open vault, night sky
 set('walls', 8, 1, C(T.skyA)); set('walls', 8, 2, C(T.skyB));
 [2, 11, 20].forEach((x) => set('above', x, 2, C(T.torch)));
