@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { PixelButton } from '../PixelButton';
 import { useStore } from '@/store/store';
+import { godForTheme } from '@/scene/office/cast';
 import {
   Chip, Field, Hint, IntervalPicker, MiniButton, Muted, Select, SubCard, SubHeader,
   Toggle, fmtInterval, inputStyle, textareaStyle
@@ -44,6 +45,7 @@ function relTime(ms: number): string {
 
 export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => void }) {
   const agents = useStore((s) => s.agents);
+  const officeTheme = useStore((s) => s.officeTheme);
   const [missions, setMissions] = useState<ScheduledMission[]>([]);
   const [adding, setAdding] = useState(false);
   const [mLabel, setMLabel] = useState('');
@@ -88,8 +90,13 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
     setMLabel(''); setMBody(''); setAdding(false);
   };
 
+  // god's label comes from the active theme, not a hardcoded cast name — the
+  // store lookup already covers a booted orchestrator, so this only fills the
+  // gap before it lands on the floor.
   const targetName = (to: string) =>
-    to === 'broadcast' ? 'everyone' : to === 'god' ? 'Michael' : agents.find((a) => a.id === to)?.name ?? to;
+    to === 'broadcast' ? 'everyone'
+      : agents.find((a) => a.id === to)?.name
+        ?? (to === 'god' ? godForTheme(officeTheme).displayName : to);
 
   return (
     <>

@@ -5,7 +5,7 @@ import { SpritePortrait } from './SpritePortrait';
 import { Icon } from './Icon';
 import { ProviderLogo } from './ProviderLogo';
 import { useStore, type Agent } from '@/store/store';
-import { OFFICE_CAST, DEFAULT_CHARACTER, type OfficeCharacterName } from '@/scene/office/cast';
+import { ALL_CAST, castForTheme, defaultCharacterForTheme, type CharacterName } from '@/scene/office/cast';
 import { type AccentColorName } from '@/design/tokens';
 import type { HireManifest } from '@shared/hire';
 import { MCP_CATALOG } from '@shared/mcpCatalog';
@@ -143,8 +143,13 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   // NEVER auto-spawn — the human reviews every field (esp. the command) first.
   const pendingHire = useStore(s => s.pendingHire);
 
-  const knownCharacter = (c?: string): OfficeCharacterName =>
-    (OFFICE_CAST.some(m => m.name === c) ? (c as OfficeCharacterName) : DEFAULT_CHARACTER);
+  // Validate against the FULL roster, not the active theme's: an agent hired
+  // under one theme keeps its character across a switch and must still resolve.
+  // The picker below is what narrows to the active theme.
+  const officeTheme = useStore((s) => s.officeTheme);
+  const roster = castForTheme(officeTheme);
+  const knownCharacter = (c?: string): CharacterName =>
+    (ALL_CAST.some(m => m.name === c) ? (c as CharacterName) : defaultCharacterForTheme(officeTheme));
   const knownAccent = (a?: string): AccentColorName =>
     (ACCENTS.includes(a as AccentColorName) ? (a as AccentColorName) : 'sky');
   /** The locally-built spawn command for a manifest: provider preset + model
@@ -162,7 +167,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
   const initialModel = isClaudeProvider(initialProvider) ? config.defaultModel : undefined;
 
   const [name, setName] = useState(pendingHire?.name ?? 'Jim');
-  const [character, setCharacter] = useState<OfficeCharacterName>(knownCharacter(pendingHire?.character));
+  const [character, setCharacter] = useState<CharacterName>(knownCharacter(pendingHire?.character));
   const [accent, setAccent] = useState<AccentColorName>(knownAccent(pendingHire?.accent));
   const [cwd, setCwd] = useState<string>(config.registeredRepos[0] ?? '');
   // Local mirror of the registered projects so one added from here shows as a
@@ -590,7 +595,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
 
                     <Row label="Character">
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        {OFFICE_CAST.map(c => (
+                        {roster.map(c => (
                           <button
                             key={c.name}
                             onClick={() => { setCharacter(c.name); setName(c.displayName); }}

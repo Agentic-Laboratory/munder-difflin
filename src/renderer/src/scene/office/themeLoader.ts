@@ -38,6 +38,18 @@ export function themeTilesetUrls(theme: ThemeConfig): string[] {
   return theme.tilesets.map((t) => t.url);
 }
 
+/** Theme ids that were renamed after they could already be persisted. The
+ *  Wizarding School shipped as `hogwarts` while it was still `built: false`, and
+ *  the picker persists an unbuilt id on switch, so a saved config can still name
+ *  it. Without this the stored value falls through to the office and the user
+ *  silently loses the theme they picked. */
+const LEGACY_THEME_IDS: Record<string, ThemeId> = { hogwarts: 'wizardschool' };
+
+/** Map a persisted (possibly renamed) id onto a current ThemeId. */
+export function resolveThemeId(id: string): ThemeId {
+  return LEGACY_THEME_IDS[id] ?? (id as ThemeId);
+}
+
 /** Light validation: the theme's map must parse and carry sane dimensions. */
 function isThemeRenderable(theme: ThemeConfig): boolean {
   try {
@@ -56,7 +68,7 @@ function isThemeRenderable(theme: ThemeConfig): boolean {
  *  phases may fetch a show bundle here); falls back to the office theme if the
  *  requested theme is missing or its map won't parse. */
 export async function loadTheme(id: ThemeId): Promise<ThemeConfig> {
-  const theme = getTheme(id);
+  const theme = getTheme(resolveThemeId(id));
   if (!isThemeRenderable(theme)) {
     console.warn(`[themeLoader] theme '${id}' is not renderable — falling back to 'office'`);
     return OFFICE_THEME;
