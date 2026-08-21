@@ -278,6 +278,66 @@ for (const id of themeIds) {
   });
 }
 
+// ─── the board walk has to fit the watchdog ──────────────────────────────────
+// Placing the boards is a geometry decision with a TIMING consequence: the actor
+// walks there and (for a `take`) back, and if that outlasts the watchdog the
+// boards hard-sync mid-walk — the same broken-looking result as an unreachable
+// stand, from a different cause. Both numbers are read from source so a change
+// to either shows up here.
+const TIMEOUT_S = Number(/BOARD_MOVE_TIMEOUT_S = (\d+)/.exec(
+  fs.readFileSync(path.join(R, 'scene/office/OfficeFloor.tsx'), 'utf8'))?.[1]);
+const SPEED_PX = Number(/const SPEED = (\d+)/.exec(
+  fs.readFileSync(path.join(R, 'scene/office/Character.ts'), 'utf8'))?.[1]);
+
+test('the watchdog timeout and the walk speed are both readable from source', () => {
+  assert.ok(TIMEOUT_S > 0, 'BOARD_MOVE_TIMEOUT_S not found in OfficeFloor.tsx');
+  assert.ok(SPEED_PX > 0, 'SPEED not found in Character.ts');
+});
+
+for (const id of themeIds) {
+  const theme = THEMES[id];
+  const map = JSON.parse(theme.mapRaw);
+  const layer = (name) => map.layers.find((l) => l.name === name && l.type === 'tilelayer');
+  const tileAt = (name, x, y) => ((layer(name)?.data?.[y * map.width + x]) ?? 0) & GID_MASK;
+  const spawns = new Map((map.layers.find((l) => l.name === 'spawn-points')?.objects ?? [])
+    .map((o) => [o.name, { x: Math.floor(o.x / map.tilewidth), y: Math.floor(o.y / map.tileheight) }]));
+  const forced = new Set([...spawns.values()].map((t) => `${t.x},${t.y}`));
+  const passable = (x, y) => x >= 0 && y >= 0 && x < map.width && y < map.height
+    && (tileAt('collision', x, y) === 0 || forced.has(`${x},${y}`));
+  const steps = (from, to) => {
+    const seen = new Set([`${from.x},${from.y}`]);
+    let q = [[from.x, from.y, 0]];
+    while (q.length) {
+      const [x, y, d] = q.shift();
+      if (x === to.x && y === to.y) return d;
+      for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+        if (passable(nx, ny) && !seen.has(`${nx},${ny}`)) { seen.add(`${nx},${ny}`); q.push([nx, ny, d + 1]); }
+      }
+    }
+    return Infinity;
+  };
+
+  test(`${id}: the longest board round trip fits the watchdog with margin`, () => {
+    const tilesPerSec = SPEED_PX / map.tilewidth;
+    const ACTING_BEAT = 0.9;   // the setTimeout in startMove
+    let worst = { secs: 0 };
+    for (const [role, stand] of Object.entries(theme.anchors.boardStands)) {
+      for (const name of theme.primarySeatNames) {
+        const seat = spawns.get(name);
+        const d = steps(seat, stand);
+        assert.notEqual(d, Infinity, `${name} cannot reach the ${role} stand at all`);
+        // `take` is the round trip: seat -> stand, beat, stand -> desk.
+        const secs = (role === 'take' ? 2 * d : d) / tilesPerSec + ACTING_BEAT;
+        if (secs > worst.secs) worst = { secs, role, name, d };
+      }
+    }
+    // 20% headroom: the BFS distance is a lower bound (no repaths, no pauses).
+    assert.ok(worst.secs < TIMEOUT_S * 0.8,
+      `worst board move (${worst.role} from ${worst.name}, ${worst.d} tiles) takes ~${worst.secs.toFixed(1)}s `
+      + `against a ${TIMEOUT_S}s watchdog — the boards would hard-sync mid-walk`);
+  });
+}
+
 // ─── source guards: the props must stay theme-driven ─────────────────────────
 // Every assertion above reads ThemeConfig, so it is blind to a coordinate typed
 // straight into the scene. These two catch that: they are the reason the office's

@@ -1334,6 +1334,13 @@ export function OfficeFloor() {
         });
       };
 
+      // Seconds a board move may stay in flight before the boards hard-sync to
+      // the ledger. It has to cover the longest round trip a theme can ask for:
+      // an actor at the farthest seat walks to the stand at Character.ts's
+      // SPEED (48px/s = 3 tiles/s), pauses ~0.9s, and a `take` walks all the way
+      // back to its desk. The castle's worst case is 41 tiles ≈ 28s, so 30 left
+      // almost no margin. test/theme-contract.test.cjs asserts the fit per theme.
+      const BOARD_MOVE_TIMEOUT_S = 45;
       let moveWatchdog = 0;
       const updateBoardMoves = (dt: number): void => {
         // carried notes ride at the actor's hand
@@ -1354,9 +1361,15 @@ export function OfficeFloor() {
         // the ASK ME board pulses for attention while questions wait
         askPulse += dt;
         if (askCount > 0) drawAskBoard(askPulse);
-        // global watchdog: if anything has been in flight too long, hard-sync
-        moveWatchdog += dt;
-        if (moveWatchdog > 30 && busyActors.size > 0) {
+        // Watchdog: if anything has been IN FLIGHT too long, hard-sync. The
+        // clock only runs while someone is actually busy — it used to free-run
+        // from scene start and reset only when it fired, so on any floor open
+        // longer than the timeout the first frame after a move began tripped it:
+        // the carried note vanished from the actor's hand and the boards snapped
+        // to the ledger while they were still walking. The theatre only ever
+        // played in the first half-minute of a session.
+        if (busyActors.size > 0) moveWatchdog += dt; else moveWatchdog = 0;
+        if (moveWatchdog > BOARD_MOVE_TIMEOUT_S) {
           moveWatchdog = 0;
           for (const id of [...busyActors]) {
             busyActors.delete(id);
