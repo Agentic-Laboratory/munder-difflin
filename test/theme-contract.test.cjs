@@ -363,3 +363,63 @@ test('the clock hit area is derived from the theme, not a literal', () => {
   assert.doesNotMatch(expr, /<=\s*\d/,
     `the clock hit area carries a literal extent, so it cannot match a theme whose clock is a different size: ${expr}`);
 });
+
+// ─── the orchestrator's identity ─────────────────────────────────────────────
+//
+// Every other agent carries its character in roster.json, but god's PTY never
+// survives a restart: useHive drops its roster entry and rebuilds the agent from
+// scratch on each launch. So god's name and sprite come from code alone, and a
+// literal there silently un-themes the most visible agent on the floor on every
+// relaunch — the exact failure this guards.
+const CAST = loadModule(path.join(R, 'scene/office/cast.ts'));
+const USE_HIVE = fs.readFileSync(path.join(R, 'hooks/useHive.ts'), 'utf8');
+const BOOTING = fs.readFileSync(path.join(R, 'components/MichaelBooting.tsx'), 'utf8');
+
+test('every theme with its own roster names its own orchestrator', () => {
+  const registry = loadRegistry();
+  for (const [id, theme] of Object.entries(registry.THEMES)) {
+    const god = CAST.godForTheme(id);
+    assert.ok(god, `${id}: godForTheme returned nothing`);
+    // god must be drawable by the theme that will render it: either from that
+    // theme's own roster, or from the office cast it falls back to.
+    const own = theme.cast.byName[god.name];
+    const fallback = CAST.OFFICE_CAST_BY_NAME[god.name];
+    assert.ok(own || fallback,
+      `${id}: orchestrator '${god.name}' is in neither this theme's cast nor the office's`);
+    assert.equal(typeof god.displayName, 'string');
+    assert.ok(god.displayName.length > 0, `${id}: orchestrator has no display name`);
+  }
+});
+
+test('the wizarding school is run by its headmaster, the office by its boss', () => {
+  assert.equal(CAST.godForTheme('wizardschool').name, 'sable');
+  assert.equal(CAST.godForTheme('office').name, 'michael');
+  // An unregistered/absent id resolves to the office, matching getTheme.
+  assert.equal(CAST.godForTheme('friends').name, 'michael');
+  assert.equal(CAST.godForTheme(undefined).name, 'michael');
+  // The id is internal; the DISPLAY name is the thing on the card, the terminal
+  // tab and the /remote-control session — so pin that too. Asserting only the id
+  // would stay green through a rename of every name the user actually sees.
+  assert.equal(CAST.godForTheme('wizardschool').displayName, 'Dumbledore');
+  assert.equal(CAST.godForTheme('office').displayName, 'Michael');
+});
+
+test("god's identity is derived from the theme, not a literal", () => {
+  // Scope to the spawn block so an unrelated 'Michael' elsewhere can't mask a
+  // regression here (nor cause a false failure).
+  const at = USE_HIVE.indexOf('const god: Agent = {');
+  assert.notEqual(at, -1, 'the god Agent literal moved — update this guard');
+  const expr = USE_HIVE.slice(at, USE_HIVE.indexOf('};', at) + 2);
+  assert.match(expr, /name:\s*godCast\.displayName/, 'god must take its name from the theme');
+  assert.match(expr, /character:\s*godCast\.name/, 'god must take its character from the theme');
+  assert.doesNotMatch(expr, /'[Mm]ichael'/,
+    `god's entry carries a hardcoded cast name, so a themed floor reverts to Michael on relaunch: ${expr}`);
+});
+
+test('the boot loader names the orchestrator from the theme', () => {
+  // It is the first thing drawn after a hive opens — a literal here gives the
+  // theme away before the floor has even rendered.
+  assert.match(BOOTING, /godForTheme/, 'the loader must resolve the orchestrator from the theme');
+  assert.doesNotMatch(BOOTING.replace(/\/\*[\s\S]*?\*\//g, ''), /Michael is settling/,
+    'the boot loader hardcodes Michael in visible copy');
+});

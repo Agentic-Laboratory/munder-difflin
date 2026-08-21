@@ -25,7 +25,7 @@ import type { AgentProvider } from '../../../shared/agentProvider';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
 import { canDeliverToAgent, deliverWithAcknowledgement } from './queueDelivery';
 import { INBOX_NUDGE_TEXT, nudgeDecision, shouldSuppressStaleNudge, type NudgeState } from './inboxNudge';
-import { ALL_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
+import { ALL_CAST, DEFAULT_CHARACTER, godForTheme } from '@/scene/office/cast';
 
 const GOD_ID = 'god';
 /** Accent palette for MAIN-spawned (voice-hired) agents — picked deterministically
@@ -330,6 +330,17 @@ export function useHive(config: HarnessConfig | null): void {
 
       const godProvider = config.godProvider ?? 'claude';
       const godModel = config.godModel;
+      // Who god IS under the active theme — Michael in the office, Sable in the
+      // castle. god is rebuilt from scratch on every launch (its PTY never
+      // survives one), so this is the only thing that decides its identity;
+      // hardcoding it here is what used to reset a themed orchestrator back to
+      // Michael on the michael sprite after each restart.
+      //
+      // Read the STORE mirror, not `config.officeTheme` directly: App resolves
+      // legacy ids and gates the whole feature on `tvShowOffices` before mirroring
+      // it there, so the raw config value can name a theme the floor is not
+      // actually rendering — and god must never disagree with the room it's in.
+      const godCast = godForTheme(useStore.getState().officeTheme);
       const command = buildSpawnCommand(config, godModel, godProvider);
       const [exe, ...args] = tokenizeCommand(command.trim());
       const res = await window.cth.spawnPty({
@@ -346,14 +357,14 @@ export function useHive(config: HarnessConfig | null): void {
         // fresh session. Without this the most important context on the floor —
         // the orchestrator's — was lost on every restart.
         resume: true,
-        hive: { id: GOD_ID, name: 'Michael', provider: godProvider, cwd: config.harnessHome!, isGod: true, role: 'orchestrator (god)' }
+        hive: { id: GOD_ID, name: godCast.displayName, provider: godProvider, cwd: config.harnessHome!, isGod: true, role: 'orchestrator (god)' }
       });
       if (cancelled) { godSpawning.current = false; return; }
       if (!res.ok) { godSpawning.current = false; useStore.getState().setGodStatus('failed'); return; }
       const god: Agent = {
         id: GOD_ID,
-        name: 'Michael',
-        character: 'michael',
+        name: godCast.displayName,
+        character: godCast.name,
         accent: 'lemon',
         description: 'god — runs the floor, triages requests, escalates only critical calls to you',
         project: 'hive',
@@ -386,7 +397,7 @@ export function useHive(config: HarnessConfig | null): void {
       bootGraceUntil.current[GOD_ID] = Date.now() + BOOT_GRACE_MS;
       void (async () => {
         try {
-          const remoteCommand = remoteControlCommandForProvider(godProvider, 'Michael');
+          const remoteCommand = remoteControlCommandForProvider(godProvider, godCast.displayName);
           if (remoteCommand) {
             // settleMs pauses the chain ~1.5s after /remote-control before the
             // orientation prompt (fresh spawns only) is submitted next.

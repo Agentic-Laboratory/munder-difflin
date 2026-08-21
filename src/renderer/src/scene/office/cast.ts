@@ -94,9 +94,19 @@ export const WIZARD_DEFAULT_CHARACTER: CharacterName = 'thorne';
  *  one table keeps the theme id to a single occurrence here. Themes absent from
  *  the table (brooklyn99, and the unbuilt ones) correctly get the office cast,
  *  which is what their ThemeConfig reuses. */
-const ROSTERS: Record<string, { cast: CastMember[]; defaultCharacter: CharacterName }> = {
-  office: { cast: OFFICE_CAST, defaultCharacter: DEFAULT_CHARACTER },
-  wizardschool: { cast: WIZARD_CAST, defaultCharacter: WIZARD_DEFAULT_CHARACTER },
+const ROSTERS: Record<string, {
+  cast: CastMember[];
+  defaultCharacter: CharacterName;
+  /** Who the ORCHESTRATOR is in this theme — the boss, the headmaster. Every
+   *  other agent carries its character in the roster file, but god's PTY never
+   *  survives a restart, so useHive drops god from the roster and rebuilds its
+   *  entry from scratch on each launch. That rebuild has nothing to read but
+   *  this table, which is why the one agent the app creates itself is the one
+   *  whose identity has to live in code. */
+  god: CharacterName;
+}> = {
+  office: { cast: OFFICE_CAST, defaultCharacter: DEFAULT_CHARACTER, god: 'michael' },
+  wizardschool: { cast: WIZARD_CAST, defaultCharacter: WIZARD_DEFAULT_CHARACTER, god: 'sable' },
 };
 
 /** The roster the Add-Agent picker should OFFER for a theme. Keeping this
@@ -109,6 +119,18 @@ export function castForTheme(theme?: string): CastMember[] {
 /** The default character for a theme's roster. */
 export function defaultCharacterForTheme(theme?: string): CharacterName {
   return ROSTERS[theme ?? 'office']?.defaultCharacter ?? DEFAULT_CHARACTER;
+}
+
+/** The orchestrator's identity for a theme — both its character and the display
+ *  name shown on its card, its terminal tab and its /remote-control session.
+ *
+ *  Takes the raw `officeTheme` config value and falls back to the office for an
+ *  unknown one, exactly as `castForTheme` and `defaultCharacterForTheme` do — an
+ *  unregistered theme id already resolves to the office everywhere else (see
+ *  `getTheme`), so god must not be the one place that disagrees. */
+export function godForTheme(theme?: string): CastMember {
+  const name = ROSTERS[theme ?? 'office']?.god ?? ROSTERS.office.god;
+  return CAST_BY_NAME[name];
 }
 
 export function hexToNumber(hex: string): number {
